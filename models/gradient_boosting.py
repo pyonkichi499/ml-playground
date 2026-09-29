@@ -79,6 +79,14 @@ def max_trees_for_cv(n_train: int, subsample: float) -> int:
     return int(CV_MAX_COST // cv_cost(1, n_train, subsample))
 
 
+def selectable_max_trees_for_cv(n_train: int, subsample: float) -> int:
+    """画面で案内する上限: スライダーで選べる木の数 (N_ESTIMATORS_OPTIONS) のうち、CV が走る最大の値 (選べない値を案内しないため)。
+
+    最小の選択肢 (1 本) は、訓練点数が UI の上限 (1000 点) 以下なら必ず予算に収まるので、候補が空になることはない。
+    """
+    return max(n for n in N_ESTIMATORS_OPTIONS if cv_within_budget(n, n_train, subsample))
+
+
 def staged_cv(estimator: GradientBoostingClassifier, X: np.ndarray, y: np.ndarray) -> StagedCV:
     """同じハイパーパラメータの GB を訓練データの各 fold で学習し、木の数ごとの検証の正解率・log-loss を fold 平均する。
 
@@ -153,15 +161,21 @@ class GradientBoostingModel(BaseModel):
         # 表示用の状態のみ: 交差検証は metrics / extra_plots で初めて必要になったときに 1 回だけ計算する
         self._fit_data = (X, y)
         self._cv: StagedCV | None = None
-        self._score_cache: dict[int, tuple[np.ndarray, np.ndarray]] = {}
+        self._score_cache: dict[int, tuple[np.ndarray, tuple[np.ndarray, np.ndarray]]] = {}
         return self
 
     def _scores(self, X: np.ndarray, y: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
-        """_staged_scores を fit ごと・配列ごとに 1 回だけ計算する (metrics と図で共有)。"""
+        """_staged_scores を fit ごと・配列ごとに 1 回だけ計算する (metrics と図で共有)。
+
+        キーは id(X) だが、キャッシュが配列そのものも持ち、取り出すときに `is` で同じ配列か確かめる。
+        キャッシュが参照を持っている間はその id が再利用されないので、別の配列の値を返すことはない。
+        """
         key = id(X)
-        if key not in self._score_cache:
-            self._score_cache[key] = _staged_scores(self.estimator, X, y)
-        return self._score_cache[key]
+        cached = self._score_cache.get(key)
+        if cached is None or cached[0] is not X:
+            cached = (X, _staged_scores(self.estimator, X, y))
+            self._score_cache[key] = cached
+        return cached[1]
 
     def staged_cv(self) -> StagedCV:
         if self._cv is None:
@@ -189,7 +203,7 @@ class GradientBoostingModel(BaseModel):
             if cv.chosen == self.estimator.n_estimators_:
                 text += "★ が右端にあるので、木を増やすと検証の損失がまだ下がるかもしれません。"
         elif cv.reason == "budget":
-            limit = max_trees_for_cv(len(ctx.X_train), self.estimator.subsample)
+            limit = selectable_max_trees_for_cv(len(ctx.X_train), self.estimator.subsample)
             text = (
                 "木の数 × 訓練データの点数が大きいため、計算時間の都合で交差検証を省略しています"
                 f"（木の数を {limit} 本以下にするか、データを減らすと表示されます）。"

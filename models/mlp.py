@@ -34,6 +34,8 @@ ACTIVATIONS = {
 MAX_UNIT_PANELS = 16
 UNIT_CMAP = "Greys"
 MAX_SCATTER_POINTS = 300
+# 出力が 0 以上の活性化関数。これらだけ「出力への重みの符号 = 押す向き」と言える (寄与は w_out × h、h ≥ 0)
+NONNEGATIVE_ACTIVATIONS = ("relu", "logistic")
 # z = 0 の線と注記の色。赤はテストデータの意味 (TEST_COLOR) と紛れるので中立の濃い灰色にする
 ZERO_LINE_COLOR = "#333333"
 
@@ -195,7 +197,11 @@ class MLPModel(BaseModel):
             f"axes: x = {ctx.feature_labels[0]}, y = {ctx.feature_labels[1]}",
         ]
         if single_layer:
-            lines.append("title colour = sign of weight to output: orange pushes to class 1, blue to class 0")
+            if mlp.activation in NONNEGATIVE_ACTIVATIONS:
+                lines.append("title colour = sign of weight to output: orange pushes to class 1, blue to class 0")
+            else:
+                # tanh / identity は出力が負になりうるので、寄与 w_out × h の向きが場所で逆転する
+                lines.append("title colour = sign of weight to output (unit output can be negative here, so the push can reverse)")
 
         # constrained layout は 16 パネルだと描画が重いので、余白をインチ単位で手動で決める
         ncols = min(len(order), 8)

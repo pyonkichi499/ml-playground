@@ -12,6 +12,7 @@ from data.generator import DataConfig
 from models.base import MODEL_REGISTRY, PlotContext
 from models.gradient_boosting import (
     CV_FOLDS, CV_MAX_COST, N_ESTIMATORS_OPTIONS, SUBSAMPLE_OPTIONS, GradientBoostingModel, _staged_scores, cv_cost, cv_within_budget, max_trees_for_cv,
+    selectable_max_trees_for_cv,
     staged_cv,
 )
 
@@ -153,7 +154,9 @@ def test_cv_skipped_over_budget_with_explanation():
     assert not m.staged_cv().available
     assert m.metrics(ctx)[CV_KEY] == "— (省略)"
     (_, fig, caption), _ = m.extra_plots(ctx)
-    assert "省略" in caption and "392 本以下" in caption
+    # 案内は、スライダーで選べる値に丸める (392 → 200)
+    assert selectable_max_trees_for_cv(len(ctx.X_train), 1.0) == 200
+    assert "省略" in caption and "200 本以下" in caption and "392" not in caption
     assert not any("CV" in t for t in _legend_texts(fig))
     # CV が無いのに「ここで選ぶ」と書くと、テストの線で選ぶよう促してしまう (AD-9)
     assert all("choose" not in ax.get_title() for ax in fig.axes)
@@ -203,6 +206,67 @@ def test_caption_hints_when_cv_choice_is_at_the_right_edge():
     assert "右端" in few.extra_plots(ctx)[0][2]
     assert "右端" not in many.extra_plots(ctx)[0][2]
     plt.close("all")
+
+
+def test_budget_hint_is_always_a_selectable_value_that_runs_cv():
+    """CV を省いたときに案内する木の数は、どの n_train × subsample でも (UI で届く全組み合わせ) 次を満たす。
+    (1) スライダーの選択肢にある。(2) その本数なら CV が走る。(3) それより大きい選択肢では走らない (= 選べる最大)。
+    fit はしない (予算の判定は cv_within_budget だけで決まる)。"""
+    for n_samples in range(50, 1001, 50):
+        for test_size in np.round(np.arange(0.0, 0.501, 0.05), 2):
+            n_train = _n_train(n_samples, float(test_size))
+            for subsample in SUBSAMPLE_OPTIONS:
+                hint = selectable_max_trees_for_cv(n_train, subsample)
+                assert hint in N_ESTIMATORS_OPTIONS, (n_train, subsample, hint)
+                assert cv_within_budget(hint, n_train, subsample)
+                bigger = [n for n in N_ESTIMATORS_OPTIONS if n > hint]
+                assert not any(cv_within_budget(n, n_train, subsample) for n in bigger)
+
+
+def test_score_cache_never_returns_another_arrays_scores():
+    """キャッシュのキーは id(X) だが、同じ配列か `is` で確かめる。同じ id の別の配列が入っていても、計算し直す。"""
+    ctx = load_ctx()
+    m = GradientBoostingModel().fit(ctx.X_train, ctx.y_train, {"n_estimators": 20})
+    a, b = ctx.X_test, ctx.X_test[::-1].copy()
+    ya, yb = ctx.y_test, ctx.y_test[::-1].copy()
+    for X, y in ((a, ya), (b, yb), (a, ya)):
+        np.testing.assert_allclose(m._scores(X, y)[1], _staged_scores(m.estimator, X, y)[1])
+    # id の再利用を模す: b の id の枠に、別の配列と偽の値を入れておく
+    m._score_cache[id(b)] = (b.copy(), (np.zeros(20), np.zeros(20)))
+    np.testing.assert_allclose(m._scores(b, yb)[1], _staged_scores(m.estimator, b, yb)[1])
+
+
+def test_growth_panels_show_the_titled_number_of_trees(monkeypatch):
+    """「境界が育っていく様子」のパネルの題 "after {s} trees": パネル s の値が、先頭 s 本の木で作った予測と一致する。
+
+    比べる値は staged_predict_proba とは別の経路で、自分で組み立てる:
+    初期値 (訓練データの class 1 の割合の log-odds) + learning_rate × 先頭 s 本の木の出力の和 → シグモイド。
+    """
+    import models.gradient_boosting as gb
+
+    captured = {}
+    original = gb.plot_region_grid
+    monkeypatch.setattr(gb, "plot_region_grid", lambda panels, ctx, **kw: captured.setdefault("p", panels) and original(panels, ctx, **kw))
+    ctx = load_ctx()
+    params = {"n_estimators": 120, "learning_rate": 0.3}
+    m = GradientBoostingModel().fit(ctx.X_train, ctx.y_train, params)
+    m._plot_growth(ctx)
+    plt.close("all")
+    est = m.estimator
+    _, _, grid = ctx.bounds.mesh(100)
+    prior = ctx.y_train.mean()
+    raw = np.full(len(grid), np.log(prior / (1 - prior)))
+    manual = {}
+    for s, tree in enumerate(est.estimators_[:, 0], start=1):
+        raw = raw + params["learning_rate"] * tree.predict(grid)
+        manual[s] = 1 / (1 + np.exp(-raw))
+    titles = [t for t, _ in captured["p"]]
+    assert titles == ["after 1 tree", "after 5 trees", "after 25 trees", "after 100 trees", "after 120 trees"]
+    for title, fn in captured["p"]:
+        s = int(title.split()[1])
+        np.testing.assert_allclose(fn(grid), manual[s], rtol=1e-6, atol=1e-9)
+    # 自明に通らないこと: 隣の本数とは値が違う
+    assert not np.allclose(manual[25], manual[100])
 
 
 def test_cv_computed_once_per_fit(monkeypatch):

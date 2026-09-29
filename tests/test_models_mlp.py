@@ -2,6 +2,7 @@
 
 import warnings
 
+import matplotlib.pyplot as plt
 import numpy as np
 import pytest
 from model_checks import (
@@ -145,6 +146,124 @@ def test_zero_line_is_not_test_red():
         all_text = " ".join(t.get_text() for t in fig.findobj(matplotlib.text.Text))
         assert "dark dashed: pre-activation z = 0" in all_text and "red" not in all_text
         plt.close("all")
+
+
+# 図の計算と別の経路で出力を作るため、活性化関数はここで独立に書く (models.mlp.ACTIVATIONS は使わない)
+_ACT = {"relu": lambda z: np.maximum(z, 0), "tanh": np.tanh, "logistic": lambda z: 1 / (1 + np.exp(-z)), "identity": lambda z: z}
+
+
+def _suptitle(fig) -> str:
+    return fig._suptitle.get_text()
+
+
+@pytest.mark.parametrize("activation", ["relu", "logistic", "tanh", "identity"])
+def test_title_colour_note_only_claims_push_direction_for_nonnegative_outputs(activation):
+    """1 層のときの注記: 「orange pushes to class 1」と言えるのは、出力 h が 0 以上の relu / logistic だけ。
+    tanh / identity は h < 0 になりうる (寄与 w_out × h の向きが場所で逆転する) ので、別の 1 行に差し替える。"""
+    ctx = load_ctx()
+    m = MLPModel().fit(ctx.X_train, ctx.y_train, {"activation": activation, "n_units": 8})
+    _, fig, *_ = m.extra_plots(ctx)[1]
+    text = _suptitle(fig)
+    mlp = m.final_estimator
+    h = _ACT[activation](m.estimator.named_steps["scaler"].transform(ctx.X_train) @ mlp.coefs_[0] + mlp.intercepts_[0])
+    if activation in ("relu", "logistic"):
+        assert h.min() >= 0
+        assert "orange pushes to class 1, blue to class 0" in text
+    else:
+        assert h.min() < 0  # 注記を差し替える理由が、この設定で実際に起きている
+        assert "pushes to class 1" not in text and "the push can reverse" in text
+    plt.close("all")
+
+
+def test_loss_title_matches_what_loss_contains_and_why_it_stopped():
+    """損失曲線の題 "Training loss (cross-entropy + L2 penalty) — stopped: …"。
+
+    中身: sklearn の loss_ ≈ 訓練データの log-loss + alpha/(2n)·Σ‖W‖² (バッチ = 訓練全体)。loss_ は最後の重みの更新の前に
+    計算されるので完全一致はしない (実測の差 8e-5)。許容幅 0.002 に対して、罰則の項がその 10 倍以上あることも確かめる
+    (罰則が入っていなくても通るテストにしないため。alpha を大きくして罰則を効かせる)。
+    止まった理由: n_iter_ と max_iter の関係で、2 つの分岐を両方確かめる。
+    """
+    ctx = load_ctx()
+    tol = 0.002
+    alpha = 1.0
+    m = MLPModel().fit(ctx.X_train, ctx.y_train, {"alpha": alpha, "max_iter": 1000})
+    mlp = m.final_estimator
+    assert mlp.n_iter_ < mlp.max_iter  # 収束して止まった側
+    y = ctx.y_train
+    p = np.clip(m.predict_proba(ctx.X_train), 1e-15, 1 - 1e-15)
+    log_loss = -(y * np.log(p) + (1 - y) * np.log(1 - p)).mean()
+    penalty = 0.5 * alpha * sum((w ** 2).sum() for w in mlp.coefs_) / len(y)
+    assert penalty > 10 * tol
+    assert abs(mlp.loss_ - (log_loss + penalty)) < tol
+    assert abs(mlp.loss_ - log_loss) > tol  # 罰則を抜くと合わない
+    title = m._plot_loss_curve().axes[0].get_title()
+    assert "cross-entropy + L2 penalty" in title and title.endswith("stopped: loss stopped improving")
+    capped = MLPModel().fit(ctx.X_train, ctx.y_train, {"max_iter": 10})
+    assert capped.final_estimator.n_iter_ == 10
+    assert capped._plot_loss_curve().axes[0].get_title().endswith("stopped: max_iter reached")
+    plt.close("all")
+
+
+def _panel_units(fig) -> list[tuple[object, int]]:
+    """(axes, ユニット番号 0 始まり) を、パネルの題 "unit {i} …" から取り出す。"""
+    out = []
+    for ax in fig.axes:
+        title = ax.get_title()
+        if ax.get_visible() and title.startswith("unit "):
+            out.append((ax, int(title.split()[1]) - 1))
+    return out
+
+
+@pytest.mark.parametrize("activation", ["relu", "logistic", "tanh", "identity"])
+def test_first_layer_panels_are_min_max_scaled_outputs_and_zero_lines(activation):
+    """第 1 隠れ層の図の見出し "output of each unit … (min-max scaled per unit)"、"dark dashed: pre-activation z = 0 (…)"。
+
+    各パネルの画像が、自前で計算したユニットの出力をユニットごとに min-max したものと一致すること。
+    z = 0 の破線の頂点で z ≈ 0 であり、見出しの括弧の意味 (relu: ここで切り替わり出力 0、logistic: 出力 0.5、
+    tanh / identity: 出力の符号の変わり目 = 0) が成り立つこと。
+    """
+    from matplotlib.contour import ContourSet
+
+    ctx = load_ctx()
+    m = MLPModel().fit(ctx.X_train, ctx.y_train, {"activation": activation, "n_units": 8})
+    _, fig, *_ = m.extra_plots(ctx)[1]
+    mlp = m.final_estimator
+    scaler = m.estimator.named_steps["scaler"]
+    W, b = mlp.coefs_[0], mlp.intercepts_[0]
+    xx, _, grid = ctx.bounds.mesh(80)
+    z = scaler.transform(grid) @ W + b
+    out = _ACT[activation](z)
+    expected_at_zero = {"relu": 0.0, "logistic": 0.5, "tanh": 0.0, "identity": 0.0}[activation]
+    panels = _panel_units(fig)
+    assert len(panels) == 8
+    n_lines = 0
+    for ax, unit in panels:
+        au = out[:, unit]
+        expected = (au - au.min()) / (au.max() - au.min())
+        np.testing.assert_allclose(np.asarray(ax.images[0].get_array()), expected.reshape(xx.shape), atol=1e-9)
+        for cs in (c for c in ax.collections if isinstance(c, ContourSet)):
+            verts = np.concatenate([path.vertices for path in cs.get_paths() if len(path.vertices)])
+            zv = scaler.transform(verts) @ W[:, unit] + b[unit]
+            assert np.abs(zv).max() < 1e-6 * max(1.0, np.ptp(z[:, unit]))  # 1 次関数の等高線なので頂点で z = 0
+            np.testing.assert_allclose(_ACT[activation](zv), expected_at_zero, atol=1e-6)
+            n_lines += 1
+    assert n_lines > 0  # 破線が 1 本も無い設定では、主張を確かめたことにならない
+    assert "dark dashed: pre-activation z = 0" in _suptitle(fig)
+    plt.close("all")
+
+
+def test_first_layer_shows_units_with_largest_outgoing_weights():
+    """見出し "{k} of {n} units (largest outgoing weights)": 64 ユニットから、出力への重みのノルムが大きい順に 16 個。"""
+    ctx = load_ctx()
+    m = MLPModel().fit(ctx.X_train, ctx.y_train, {"n_units": 64, "max_iter": 200})
+    _, fig, *_ = m.extra_plots(ctx)[1]
+    norms = np.linalg.norm(m.final_estimator.coefs_[1], axis=1)
+    expected = list(np.argsort(-norms)[:16])
+    shown = [unit for _, unit in _panel_units(fig)]
+    assert shown == expected
+    assert len(set(np.round(norms, 12))) == 64  # 同点が無いので、順番が一意に決まる
+    assert "16 of 64 units (largest outgoing weights)" in _suptitle(fig)
+    plt.close("all")
 
 
 @pytest.mark.timing

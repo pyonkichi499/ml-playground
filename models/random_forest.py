@@ -20,7 +20,7 @@ MIN_TREES_FOR_OOB = 15
 class RandomForestModel(BaseModel):
     name = "ランダムフォレスト (Random Forest)"
     summary = (
-        "少しずつ違うデータ (ブートストラップ) と特徴量で育てた、多数の決定木の予測確率を平均する（葉が純粋になるまで育てた木なら多数決と同じ）。"
+        "ブートストラップしたデータで、分割ごとにランダムに選んだ特徴量を候補にして育てた、多数の決定木の予測確率を平均する（葉が純粋になるまで育てた木なら多数決と同じ）。"
         "1本1本は過学習してギザギザでも、平均すると分散が減って境界がなめらかになる。"
     )
     default_params = {
@@ -34,7 +34,7 @@ class RandomForestModel(BaseModel):
     # チューニングページの固定値の初期値だけ木を減らして探索を軽くする (AD-11)。プレイグラウンドと build() には効かない
     tuning_defaults = {"n_estimators": 50}
     # 木が少ないと「どの木でも学習に使われた (OOB の無い) 点」が出て sklearn が警告する。想定内なので局所的に抑制し、
-    # その点は OOB 正解率と OOB の曲線の両方から除いて計算する (D2)
+    # その点は OOB 正解率と OOB の曲線の両方から除いて計算する
     expected_fit_warnings = ((UserWarning, "Some inputs do not have OOB scores"),)
 
     def fit(self, X: np.ndarray, y: np.ndarray, params: dict[str, Any], *,
@@ -58,7 +58,7 @@ class RandomForestModel(BaseModel):
         d = self.default_params
         n_estimators = st.select_slider(
             "木の数 (n_estimators)", N_ESTIMATORS_OPTIONS, value=d["n_estimators"], key=self.key("n_estimators"), persist_state="session",
-            help="多いほど平均がとれて予測が安定する。増やしても過学習はしないが、計算は重くなる",
+            help="多いほど平均がとれて予測が安定する。木を増やすこと自体で過学習が進むことはない (深い木の過学習そのものは残る) が、計算は重くなる",
         )
         unlimited = st.checkbox("max_depth を制限しない (None)", value=d["max_depth"] is None,
                                 key=self.key("max_depth_none"), persist_state="session")
@@ -78,7 +78,7 @@ class RandomForestModel(BaseModel):
         )
         min_samples_leaf = st.slider(
             "葉ノードの最小サンプル数 (min_samples_leaf)", 1, 20, d["min_samples_leaf"],
-            key=self.key("min_samples_leaf"), persist_state="session", help="大きいほど1本1本の木が単純になり、境界がなめらかになる",
+            key=self.key("min_samples_leaf"), persist_state="session", help="大きいほど1本1本の木が単純になり、境界の細かい出っ張りが減る",
         )
         if not bootstrap and max_features == 2:
             st.caption("⚠️ bootstrap なし・特徴量 2 つでは全ての木がほぼ同じになり、平均の効果が消えます")
@@ -121,6 +121,13 @@ class RandomForestModel(BaseModel):
         if self.oob_n_excluded > 0:
             accuracy_plot += (
                 f"OOB 正解率と OOB の曲線は、どの木でも学習に使われた {self.oob_n_excluded} 点を除いて計算しています。",
+            )
+        elif self.oob_accuracy is None and self._oob_curve_is_drawn(ctx):
+            # 木が MIN_TREES_FOR_OOB 本未満: 指標は「—」だが点線は描かれるので、理由を示す。上の行 (除いた点の数) とは排他
+            accuracy_plot += (
+                f"木が {MIN_TREES_FOR_OOB} 本未満では、どの木でも学習に使われた (OOB の予測が無い) 点が多く出るので、"
+                "OOB 正解率は表示しません。点線は、OOB の予測がある点だけで計算しています"
+                " (9 割以上の点に OOB の予測が付いた本数から描きます)。",
             )
         return [
             ("個々の木 vs フォレスト", self._plot_trees(ctx)),
@@ -178,6 +185,10 @@ class RandomForestModel(BaseModel):
         ax.legend(fontsize=8, loc="upper center", bbox_to_anchor=(0.5, -0.16), ncol=1, frameon=False)
         fig.tight_layout()
         return fig
+
+    def _oob_curve_is_drawn(self, ctx: PlotContext) -> bool:
+        acc = self._cumulative_oob_accuracy(ctx.X_train, ctx.y_train)
+        return acc is not None and bool(np.isfinite(acc).any())
 
     def _cumulative_oob_accuracy(self, X: np.ndarray, y: np.ndarray) -> np.ndarray | None:
         """先頭 k 本のうち、その点を学習に使わなかった木だけで確率を平均したときの正解率。"""
