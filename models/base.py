@@ -191,7 +191,9 @@ class BaseModel(ABC):
     tuning_defaults: ClassVar[dict[str, Any]] = {}
     #: 特徴量のスケールで結果が変わるモデル (距離を使う k-NN・SVM)。True なら、データ設定の
     #: 「標準化する」が make_estimator で StandardScaler を前段に付ける (AD-14.4)。
-    #: ロジスティック回帰と MLP は自前の Pipeline で標準化済み、木とガウス生成モデルは軸ごとのスケールに不変なので False
+    #: False のままにするもの: ロジスティック回帰と MLP は自前の Pipeline で標準化済み。木、LDA、Naive Bayes、
+    #: reg_param = 0 の QDA は現実的な単位の範囲では軸ごとのスケールに不変。reg_param > 0 の QDA は
+    #: 単位に依存するが、標準化は適用しない (プレイグラウンドが caption で説明する。AD-14.4 の訂正)
     scale_sensitive: ClassVar[bool] = False
     #: 学習時に想定内として抑制する警告 (category, message の正規表現; "" = すべて)。
     #: BaseModel.fit の中だけで局所的に抑制する (グローバルな警告フィルタは変えない)
