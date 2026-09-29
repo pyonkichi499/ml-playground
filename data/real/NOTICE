@@ -1,0 +1,30 @@
+penguins.csv — パーマー諸島（南極）のペンギンのデータ
+
+入手元:   palmerpenguins R パッケージの inst/extdata/penguins.csv
+          https://github.com/allisonhorst/palmerpenguins
+          (commit 8957207b78d6ccd1b4654a9dd9c9041b657478ab、パッケージのバージョン 0.1.1)
+SHA-256:  f204db2c753b0937caac3cb35258562c14f073e4bbc76be24b4c51ce22767a93
+ライセンス: CC0 1.0 Universal（パッケージの DESCRIPTION と LICENSE.md の記載による）。
+          原文: "Data are available by CC-0 license in accordance with the Palmer Station
+          LTER Data Policy and the LTER Data Access Policy for Type I data."
+
+引用のお願い（原文のまま）:
+  Horst AM, Hill AP, Gorman KB (2020). palmerpenguins: Palmer Archipelago
+  (Antarctica) penguin data. R package version 0.1.0.
+  https://allisonhorst.github.io/palmerpenguins/. doi: 10.5281/zenodo.3960218.
+
+データの初出（原文のまま）:
+  Gorman KB, Williams TD, Fraser WR (2014). Ecological sexual dimorphism and
+  environmental variability within a community of Antarctic penguins
+  (genus Pygoscelis). PLoS ONE 9(3):e90081.
+  https://doi.org/10.1371/journal.pone.0090081
+データは Dr. Kristen Gorman と Palmer Station Antarctica LTER（Long Term Ecological
+Research Network の一員）が収集・公開したものです。
+データ提供者は、データを公表する場合は Dr. Kristen Gorman に連絡するよう依頼しています
+（依頼であり、ライセンスの条件ではありません）。
+ファイルは変更せずに同梱しています。
+
+未確認事項（正直に記録します）: EDI 上の元データ（knb-lter-pal.219.5 / 220.7 / 221.8）に
+記載された利用条件と、Palmer Station LTER Data Policy / LTER Data Access Policy の本文は
+確認できていません。上の CC0 の根拠は、このファイルについての palmerpenguins パッケージ
+自身の表明です。EDI の生データはここでは再配布していません。
