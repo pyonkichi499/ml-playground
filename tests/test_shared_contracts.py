@@ -312,3 +312,95 @@ def test_class_labels_in_figures(name, expected):
     assert ctx.class_labels == expected
     # spec なし (トイの既定) も "class 0" / "class 1" のまま
     assert PlotContext.build(X_tr, y_tr, X_te, y_te).class_labels == ("class 0", "class 1")
+
+
+# ---- KU-15: 決定境界の黒線 (base.draw_background の確率 0.5 の等高線) --------------
+# 主張:「黒線: 確率 0.5 の決定境界」(base / gaussian の説明)、「投票が半々になる決定境界」(knn の説明)。
+# 文字の有無ではなく、描いた線の中身を確かめる: (a) level が 0.5、(b) 線の両側で predict が 0 と 1 に分かれる。
+from matplotlib.contour import ContourSet  # noqa: E402
+from sklearn.svm import SVC  # noqa: E402
+
+from models import MODEL_REGISTRY  # noqa: E402
+
+_KNN = "k近傍法 (k-NN)"
+_GAUSS = "ガウス生成モデル (Naive Bayes / LDA / QDA)"
+_BOUNDARY_RESOLUTION = 300  # plot_decision_boundary の既定 = 画面に描かれる図と同じ
+
+
+def _half_contours(fig) -> list[ContourSet]:
+    return [c for c in fig.axes[0].collections if isinstance(c, ContourSet) and list(c.levels) == [0.5]]
+
+
+def _line_points_and_normals(cs: ContourSet) -> tuple[np.ndarray, np.ndarray]:
+    """線の各線分の中点と、単位法線。"""
+    mids, normals = [], []
+    for path in cs.get_paths():
+        v = path.vertices
+        if len(v) < 2:
+            continue
+        seg = np.diff(v, axis=0)
+        length = np.linalg.norm(seg, axis=1)
+        keep = length > 0
+        mids.append((v[:-1] + v[1:])[keep] / 2)
+        normals.append(np.c_[-seg[keep, 1], seg[keep, 0]] / length[keep, None])
+    return np.vstack(mids), np.vstack(normals)
+
+
+def _boundary_data():
+    return DataConfig("Moons", 200, 0.3, 0, 0.3).load()
+
+
+# ケースはこの 4 本 + 下の 1 本で固定 (増やすときは TL に相談)
+@pytest.mark.parametrize(("name", "params"), [
+    (_KNN, {"n_neighbors": 5}),
+    (_KNN, {"n_neighbors": 15, "weights": "distance"}),
+    (_GAUSS, {"variant": "lda"}),
+    (_GAUSS, {"variant": "qda", "reg_param": 0.1}),
+])
+def test_black_line_is_the_predict_boundary(name, params):
+    X_tr, X_te, y_tr, y_te = _boundary_data()
+    model = MODEL_REGISTRY[name]().fit(X_tr, y_tr, params)
+    fig = model.plot_decision_boundary(X_tr, y_tr, X_te, y_te)
+    try:
+        found = _half_contours(fig)
+        assert len(found) == 1, "境界図には level 0.5 の線がちょうど 1 本"  # (a)
+        mids, normals = _line_points_and_normals(found[0])
+    finally:
+        plt.close(fig)
+    assert len(mids) > 20
+    # (b) 線から delta = (データの広い方の軸の幅) / 300 (格子の約 1 目盛り) だけ両側に離した点で、predict が 0 と 1 に分かれる
+    span = max(np.ptp(np.vstack([X_tr, X_te]), axis=0))
+    delta = span / _BOUNDARY_RESOLUTION
+    a, b = mids + delta * normals, mids - delta * normals
+    pa, pb = model.predict_proba(a), model.predict_proba(b)
+    # proba がちょうど 0.5 の点は、predict がどちらになるかが実装の都合で決まるので外す
+    ok = (pa != 0.5) & (pb != 0.5)
+    assert ok.sum() > 20
+    split = model.predict(a[ok]) != model.predict(b[ok])
+    # 100% を求めない理由: k-NN の確率は階段状で、格子の上の等高線は階段の角と格子より細い島を丸めて描く
+    # (実測: k=5 で 729 本中 5 本が角)。ガウスは実測 100%。線がずれていれば (例: P = 0.3 の位置) 0〜2% に下がる
+    assert split.mean() >= 0.97, f"{name} {params}: {split.mean():.3f} of line segments separate the classes"
+
+
+class _NoProba(BaseModel):
+    """predict_proba を持たない推定器 (SVC の既定) で、base の draw_background を通すスタブ。"""
+
+    name = "_no_proba (test only)"
+    default_params = {}
+
+    def render_params(self, st):
+        return {}
+
+    def build(self, params):
+        return SVC(kernel="linear")
+
+
+def test_no_black_line_without_predict_proba():
+    X_tr, X_te, y_tr, y_te = _boundary_data()
+    model = _NoProba().fit(X_tr, y_tr, {})
+    assert model.predict_proba(X_tr) is None
+    fig = model.plot_decision_boundary(X_tr, y_tr, X_te, y_te, resolution=40)
+    try:
+        assert _half_contours(fig) == []
+    finally:
+        plt.close(fig)
