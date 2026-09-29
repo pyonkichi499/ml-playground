@@ -858,6 +858,15 @@ def plot_best_so_far(
 # ---------------------------------------------------------------------------
 # ④ テストで最終評価
 # ---------------------------------------------------------------------------
+def _clipped_xerr(center: float, half: float) -> np.ndarray | None:
+    """[center − half, center + half] を [0, 1] で切った誤差棒の (左の長さ, 右の長さ)。half が NaN なら None。"""
+    if half is None or not np.isfinite(half):
+        return None
+    left = max(0.0, min(half, center - 0.0))
+    right = max(0.0, min(half, 1.0 - center))
+    return np.array([[left], [right]])
+
+
 def plot_cv_vs_test(
     best: Mapping[str, TrialRecord],
     test: Mapping[str, float],
@@ -865,8 +874,11 @@ def plot_cv_vs_test(
 ) -> Figure:
     """手法ごとに、選ばれたパラメータの CV スコア (fold ごとの点 + 平均 ± 標準偏差) とテストスコア (▲) を並べる。
 
-    test_se: 手法ごとのテストスコアの標準誤差 (runner.test_standard_error)。あれば ▲ に ±1 SE の誤差棒を付ける
-        (テストデータが有限であることによる揺らぎ。手法間のテストの差はこれより小さいことが多い)。
+    test_se: 手法ごとのテストスコアの標準誤差 (runner.test_standard_error。境界で 0 にならないよう補正した近似)。
+        あれば ▲ に ±1 SE の誤差棒を付ける (テストデータが有限であることによる揺らぎ)。どの手法も同じテストデータで
+        測っているので、手法どうしは対応のある比較で見る必要があり、誤差棒の重なりだけでは差の有無を決められない。
+    誤差棒の中心は観測した値 (CV の平均、テストのスコア)。スコアは [0, 1] なので、棒は描くときだけ [0, 1] で切る
+    (正解率 1.0 なら上側の腕は長さ 0)。注記の数値 (± の値) と test_se は切らない。
     """
     methods = [m for m in METHODS if m in best] + [m for m in best if m not in METHODS]
     n = len(methods)
@@ -879,8 +891,8 @@ def plot_cv_vs_test(
         marker = METHOD_MARKERS.get(m, "o")
         folds = np.asarray(rec.cv_scores, dtype=float)
         ax.scatter(folds, np.full(len(folds), i - 0.14), s=18, color=_tint(color, 0.5), lw=0, zorder=2)
-        ax.errorbar(rec.mean_cv, i - 0.14, xerr=rec.std_cv, fmt=marker, color=color, markersize=8, capsize=3,
-                    lw=1.5, zorder=3)
+        ax.errorbar(rec.mean_cv, i - 0.14, xerr=_clipped_xerr(rec.mean_cv, rec.std_cv), fmt=marker, color=color,
+                    markersize=8, capsize=3, lw=1.5, zorder=3)
         ax.annotate(f"CV {rec.mean_cv:.3f}", (rec.mean_cv, i - 0.14), xytext=(0, 8), textcoords="offset points",
                     fontsize=8, color=TEXT, ha="center")
         t = test.get(m)
@@ -888,11 +900,11 @@ def plot_cv_vs_test(
             se = (test_se or {}).get(m)
             has_se = se is not None and np.isfinite(se)
             any_se |= has_se
-            ax.errorbar(t, i + 0.2, xerr=se if has_se else None, fmt="^", color=TEST_COLOR, markersize=9, capsize=3,
-                        lw=1.2, zorder=4)
+            ax.errorbar(t, i + 0.2, xerr=_clipped_xerr(t, se) if has_se else None, fmt="^", color=TEST_COLOR,
+                        markersize=9, capsize=3, lw=1.2, zorder=4)
             ax.plot([rec.mean_cv, t], [i - 0.14, i + 0.2], color=MUTED, lw=0.8, ls=":", zorder=1)
             txt = f"test {t:.3f}" + (f" ± {se:.3f}" if has_se else "")
-            ax.annotate(txt, (t + (se if has_se else 0.0), i + 0.2), xytext=(8, 0), textcoords="offset points",
+            ax.annotate(txt, (min(t + (se if has_se else 0.0), 1.0), i + 0.2), xytext=(8, 0), textcoords="offset points",
                         fontsize=8, color=TEXT, va="center")
     ax.set_ylim(n - 0.4, -0.6)
     ax.set_xlabel("score")
@@ -907,7 +919,7 @@ def plot_cv_vs_test(
         Line2D([], [], marker="o", ls="", color="#b5b4af", markersize=5, label="CV: each fold"),
         Line2D([], [], marker="o", ls="-", color=MUTED, markersize=7, label="CV: mean ± std over folds"),
         Line2D([], [], marker="^", ls="-" if any_se else "", color=TEST_COLOR, markersize=8,
-               label="test ± 1 SE (finite test set)" if any_se else "test (held out)"),
+               label="test ± 1 SE (adjusted)" if any_se else "test (held out)"),
     ]
     ax.legend(handles=handles, loc="upper left", bbox_to_anchor=(1.01, 1.0), frameon=False, fontsize=8)
     return fig

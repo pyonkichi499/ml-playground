@@ -286,6 +286,45 @@ def format_eta(seconds: float) -> str:
     return str(int(math.floor(seconds / 5 + 0.5) * 5))
 
 
+def background_note(has_surface: bool) -> str:
+    """③ の説明の「背景」の行。マップを計算したときだけ、背景と ＋ の意味を書く (無いときは無地)。"""
+    if has_surface:
+        return f"- **背景**: 粗い格子の全点を交差検証した{SURFACE_LABEL} (＋ が最良点)。探索手法はこれを知らない。"
+    return (f"- **背景**: 無地（{SURFACE_LABEL}は計算していない）。サイドバーでオンにすると、"
+            "格子の全点を交差検証した参考の面が背景に出る。")
+
+
+def previous_run_text(rc: TuningConfig, rd: DataConfig, scale_sensitive: bool) -> str:
+    """「古い結果」の案内に出す前回の設定。rd は normalized() 済み (実データでは n_samples / noise が None)。
+
+    実データでは、結果が古くなる主な原因 (特徴量の組、標準化) を出す。標準化は k-NN / SVM にだけ効くので、
+    それ以外のモデルでは項目ごと省く。評価指標は UI の表記で出す。
+    """
+    spec = rd.spec()
+    if spec.is_real:
+        keys = rd.features or spec.default_features
+        parts = ["特徴量 " + " × ".join(spec.feature(k).label_ja for k in keys)]
+        if scale_sensitive:
+            parts.append("標準化 " + ("あり" if rd.standardize else "なし"))
+        data = f"{rd.dataset}（{'、'.join(parts)}、テスト {rd.test_size:.0%}）"
+    else:
+        data = f"{rd.dataset} (n={rd.n_samples}, noise={rd.noise}, テスト {rd.test_size:.0%})"
+    return (f"前回: {data} × {rc.model_name} ／ 軸 {', '.join(rc.axes)} ／ {', '.join(rc.methods)} × "
+            f"{rc.n_trials} 回 ／ {rc.n_splits}-fold ／ {SCORING_LABELS.get(rc.scoring, rc.scoring)} ／ "
+            f"シード {rc.seed}")
+
+
+def test_se_caption(scoring: str, n_test: int) -> str:
+    """④ の表の下の説明。± SE は runner.test_standard_error の補正した式 (KU-02)。中心と表の値は観測したスコア。"""
+    if scoring == "accuracy":
+        return (f"テストは {n_test} 点なので、正解率は 1 点で {1 / max(n_test, 1):.3f} 動く。"
+                "± SE は Agresti–Coull 型の補正（当たり 2 点と外れ 2 点を足して計算する）で、正解率が 1 や 0 でも 0 にならない。"
+                "誤差棒の中心と表の値は、観測したスコアのまま。")
+    return (f"テストは {n_test} 点。± SE は ROC AUC の標準誤差の近似。Hanley & McNeil (1982) の式は AUC = 1 で 0 に"
+            "なるので、多い方のクラスの点数に応じた補正（多い方のクラスの点数が多いほど補正は小さい）を、すべての値にかけている。AUC が 1 に近いときは、補正なしの式より"
+            "大きめに出る。誤差棒の中心と表の値は、観測したスコアのまま。")
+
+
 def eta_levers(n_trials: int, min_trials: int, n_splits: int, surface_on: bool) -> list[str]:
     """推定時間が長いときに示す、いま使える短縮のしかた。"""
     levers = []
@@ -388,7 +427,7 @@ with st.sidebar:
     per_fold = len(X_train) // int(n_splits)
     if per_fold < MIN_VALIDATION_POINTS:
         st.warning(f"1 fold の検証データが {per_fold} 点しかない。1 fold のスコアは数点の当たり外れで大きく動く"
-                   f" (正解率なら 1 点で {100 / max(per_fold, 1):.0f}%)。k を小さくするか、サンプル数を増やす。")
+                   f" (正解率なら 1 点で {1 / max(per_fold, 1):.3f} 動く)。k を小さくするか、サンプル数を増やす。")
     scoring = st.radio(
         "評価指標", list(SCORING_LABELS), format_func=SCORING_LABELS.get, horizontal=True, key="tuning.scoring",
         persist_state=PS,
@@ -642,9 +681,7 @@ def stale_notice(result: dict[str, Any]) -> None:
     rd: DataConfig = result["data_config"]
     st.warning("サイドバーの設定が前回の実行から変わっています。「探索を実行」で再実行してください。"
                "以下は **前回の結果** です。")
-    st.caption(f"前回: {rd.dataset} (n={rd.n_samples}, noise={rd.noise}, テスト {rd.test_size:.0%}) × "
-               f"{rc.model_name} ／ 軸 {', '.join(rc.axes)} ／ {', '.join(rc.methods)} × {rc.n_trials} 回 ／ "
-               f"{rc.n_splits}-fold ／ {rc.scoring} ／ シード {rc.seed}")
+    st.caption(previous_run_text(rc, rd, MODEL_REGISTRY[rc.model_name].scale_sensitive))
 
 
 @st.fragment
@@ -660,8 +697,15 @@ def show_search_result(result: dict[str, Any]) -> None:
 
     c1, c2 = st.columns([2, 3])
     with c1:
-        value = st.segmented_control("背景に表示する値", list(VALUE_OPTIONS), format_func=VALUE_OPTIONS.get,
-                                     default="cv", key="tuning.value", required=True, persist_state=PS) or "cv"
+        # 2 次元でマップが無いと、背景は無地で試行の位置はパラメータの値なので、切り替えても何も変わらない。
+        # そのときは出さず、前に選んだ値 (persist_state で残っている) も使わずに "cv" に固定する。
+        # 1 次元では試行の点の高さがこの値なので、マップが無くても残す。
+        if len(specs) > 1 and surface is None:
+            value = "cv"
+        else:
+            value = st.segmented_control("背景に表示する値", list(VALUE_OPTIONS), format_func=VALUE_OPTIONS.get,
+                                         default="cv", key="tuning.value", required=True,
+                                         persist_state=PS) or "cv"
     with c2:
         upto = (st.slider("表示する試行 (手法ごとの #)", 1, n_max, n_max, key=f"tuning.upto.{result['run_id']}")
                 if n_max > 1 else 1)
@@ -731,9 +775,10 @@ with tab_search:
     else:
         stale_notice(result)
         show_search_result(result)
-    if (partial is not None and partial["trials"]) or result is not None:
+    shown_record = partial if (partial is not None and partial["trials"]) else result
+    if shown_record is not None:
         st.markdown(
-            f"- **背景**: 粗い格子の全点を交差検証した{SURFACE_LABEL} (＋ が最良点)。探索手法はこれを知らない。\n"
+            background_note(shown_record["surface"] is not None) + "\n"
             "- 番号は試行の順番 (後ほど濃い)。★ は各手法の最良点。スライダーで途中の状態を再生できる。\n"
             "- **レース図**: 「ここまでの最良 CV」の推移。少ない試行 (または短い学習時間) で良いスコアに届く手法ほど効率がよい。\n"
             "- 手法間の差が fold のばらつき (②の帯) より小さければ、その差は偶然の範囲かもしれない。"
@@ -783,11 +828,7 @@ with tab_test:
                     for c in ("最良 CV", "テスト", "± SE", "差 (テスト − CV)")
                 })
                 n_test = len(y_te)
-                if rcfg.scoring == "accuracy":
-                    st.caption(f"テストは {n_test} 点なので、正解率は 1 点で {100 / n_test:.1f}% 動く。"
-                               "± SE は √(p(1−p)/n) (p = テスト正解率)。")
-                else:
-                    st.caption(f"テストは {n_test} 点。± SE は ROC AUC の標準誤差 (Hanley & McNeil, 1982) の近似。")
+                st.caption(test_se_caption(rcfg.scoring, n_test))
             st.markdown(
                 "- 各手法で CV が最良だったパラメータで **訓練データ全体** から学習し直し、テストデータで 1 回だけ評価した。\n"
                 "- **最良の CV スコアは楽観的**: たくさんの候補から「たまたま高く出たもの」を選ぶので、選んだ値には"

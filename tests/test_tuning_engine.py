@@ -370,17 +370,78 @@ def test_planned_trials_match_run_search(data):
 
 
 def test_standard_error_accuracy_and_auc():
-    y = np.array([0, 1] * 50)
-    assert test_standard_error(0.9, y, "accuracy") == pytest.approx(math.sqrt(0.9 * 0.1 / 100))
-    assert test_standard_error(1.0, y, "accuracy") == 0.0
+    """KU-02: 境界で 0 にならないよう補正した SE。accuracy は Agresti–Coull 型、roc_auc は擬似ペアで寄せた A~ で HM。"""
+    y = np.array([0, 1] * 50)  # n = 100
+    p_adj = (0.9 * 100 + 2) / 104
+    assert test_standard_error(0.9, y, "accuracy") == pytest.approx(math.sqrt(p_adj * (1 - p_adj) / 104))
+    # テストが有限なら、全問正解 / 全問不正解でも誤差は 0 にならない
+    assert test_standard_error(1.0, y, "accuracy") > 0 and test_standard_error(0.0, y, "accuracy") > 0
+    assert test_standard_error(1.0, np.array([0, 1] * 15), "accuracy") == pytest.approx(0.0404, abs=5e-5)  # 30 点
     assert math.isnan(test_standard_error(float("nan"), y, "accuracy"))
     assert math.isnan(test_standard_error(0.9, y[:0], "accuracy"))
     assert math.isnan(test_standard_error(0.9, np.ones(10, int), "roc_auc"))  # 片方のクラスのみ
-    assert test_standard_error(1.0, y, "roc_auc") == pytest.approx(0.0, abs=1e-12)
+    assert test_standard_error(1.0, y, "roc_auc") > 0
+
+
+def _classes(n_pos: int, n_neg: int) -> np.ndarray:
+    return np.array([1] * n_pos + [0] * n_neg)
+
+
+@pytest.mark.parametrize("n_pos, n_neg, expected", [(30, 30, 0.0320), (15, 15, 0.0612), (14, 16, 0.0611)])
+def test_standard_error_auc_at_one_with_class_sizes(n_pos, n_neg, expected):
+    """AUC = 1 の SE を、クラスの点数 (n1 = 正例, n0 = 負例) と組で固定する (手計算の値)。
+
+    n1=n0=15 は和泉さんの Iris の条件 (テスト 30 点) で、ページの AppTest と照らし合わせられる。
+    """
+    assert test_standard_error(1.0, _classes(n_pos, n_neg), "roc_auc") == pytest.approx(expected, abs=5e-5)
+
+
+@pytest.mark.parametrize("n_pos, n_neg", [(15, 15), (15, 46), (46, 15), (5, 80)])
+def test_adjusted_auc_depends_only_on_larger_class(n_pos, n_neg):
+    """恒等式: (A n1 n0 + 2 m) / (n1 n0 + 4 m) = (M A + 2) / (M + 4) (m = 少ない方、M = 多い方)。
+    m は約分で消え、縮めの強さは多い方のクラスの点数 M で決まる。"""
+    from tuning.runner import _adjusted_auc
+
+    big = max(n_pos, n_neg)
+    for a in (0.0, 0.3, 0.5, 0.9, 0.98, 1.0):
+        assert _adjusted_auc(a, n_pos, n_neg) == pytest.approx((big * a + 2) / (big + 4), abs=1e-12)
+
+
+def test_standard_error_boundary_shrinks_with_n():
+    """境界の SE は、テストが大きくなるほど小さくなる (単調)。"""
+    acc = [test_standard_error(1.0, np.array([0, 1] * (n // 2)), "accuracy") for n in (20, 40, 80, 160)]
+    auc = [test_standard_error(1.0, _classes(n, n), "roc_auc") for n in (10, 20, 40, 80)]
+    assert all(a > b > 0 for a, b in zip(acc, acc[1:])) and all(a > b > 0 for a, b in zip(auc, auc[1:]))
+
+
+@pytest.mark.parametrize("n_pos, n_neg", [(5, 5), (15, 15), (14, 16), (30, 30), (5, 80), (80, 5), (155, 155)])
+def test_standard_error_auc_near_one_is_larger_than_uncorrected(n_pos, n_neg):
+    """AUC が 1 に近いとき (A ∈ [0.9, 1])、補正後の SE ≥ 観測した A での補正なしの Hanley–McNeil の SE。
+
+    ページのキャプション「1 に近いときは補正なしの式より大きめ」を支える。1 から遠いとき (A ≈ 0.54〜0.6、
+    クラスが小さく偏っている) はわずかに下回ることがある (格子の計算で最悪 −0.0002) ので、範囲は 1 の近くに限る。
+    """
+    from tuning.runner import _hanley_mcneil_se
+
+    y = _classes(n_pos, n_neg)
+    for a in np.linspace(0.9, 1.0, 101):
+        assert test_standard_error(float(a), y, "roc_auc") >= _hanley_mcneil_se(float(a), n_pos, n_neg) - 1e-12
+
+
+def test_standard_error_interior_close_to_textbook():
+    """補正は全域にかかるが、境界から離れた値では教科書の式から大きくは離れない (15% 以内)。"""
+    from tuning.runner import _hanley_mcneil_se
+
+    y = np.array([0, 1] * 50)
+    for p in (0.6, 0.75, 0.9):
+        wald = math.sqrt(p * (1 - p) / 100)
+        assert abs(test_standard_error(p, y, "accuracy") / wald - 1) < 0.15
+    for a in (0.6, 0.75, 0.85):
+        assert abs(test_standard_error(a, _classes(50, 50), "roc_auc") / _hanley_mcneil_se(a, 50, 50) - 1) < 0.15
 
 
 def test_standard_error_auc_matches_bootstrap():
-    """Hanley–McNeil の SE が、ブートストラップで測ったテスト AUC の揺らぎと同程度であること。"""
+    """補正後の SE (Hanley–McNeil の式を A~ で計算) が、ブートストラップで測ったテスト AUC の揺らぎと同程度であること。"""
     from sklearn.metrics import roc_auc_score
 
     rng = np.random.default_rng(0)

@@ -11,24 +11,18 @@ import math
 from pathlib import Path
 from typing import Any
 
-import matplotlib
 import numpy as np
+import pytest
+from streamlit.testing.v1 import AppTest
 
-# AppTest のスクリプトスレッドで TkAgg が選ばれるとクラッシュするため (DISPLAY がある環境)。
-# TODO: tests/conftest.py で共通化されたら外す (アーキテクトに上申中)。
-matplotlib.use("Agg")
-
-import pytest  # noqa: E402
-from streamlit.testing.v1 import AppTest  # noqa: E402
-
-import tuning.evaluate  # noqa: E402
-import tuning.runner  # noqa: E402
-from models import MODEL_REGISTRY  # noqa: E402
-from tuning import plots  # noqa: E402
-from data.generator import DataConfig, class_balance, is_imbalanced  # noqa: E402
-from tuning.budget import budget_for  # noqa: E402
-from tuning.records import Surface, TrialRecord, TuningConfig  # noqa: E402
-from tuning.space import ParamSpec  # noqa: E402
+import tuning.evaluate
+import tuning.runner
+from data.generator import DataConfig, class_balance, is_imbalanced
+from models import MODEL_REGISTRY
+from tuning import plots
+from tuning.budget import budget_for
+from tuning.records import Surface, TrialRecord, TuningConfig
+from tuning.space import ParamSpec
 
 ROOT = Path(__file__).resolve().parents[1]
 APP = str(ROOT / "app.py")
@@ -73,6 +67,20 @@ def no_fitting(monkeypatch) -> None:
     monkeypatch.setattr(tuning.evaluate, "evaluate", boom)
 
 
+def record_plot_calls(monkeypatch) -> dict[str, list[dict[str, Any]]]:
+    """ページが図の関数に渡した引数を記録する (本物も呼んで Figure を返す)。KU-11: 配線のテスト用。"""
+    calls: dict[str, list[dict[str, Any]]] = {}
+    for name in ("plot_search_heatmaps", "plot_best_so_far", "plot_cv_vs_test"):
+        real = getattr(plots, name)
+
+        def recorder(*args, _real=real, _name=name, **kwargs):
+            calls.setdefault(_name, []).append(kwargs)
+            return _real(*args, **kwargs)
+
+        monkeypatch.setattr(plots, name, recorder)
+    return calls
+
+
 def texts(at: AppTest) -> list[str]:
     """画面に出ている文章 (markdown / caption / warning / info とサイドバー) をまとめて返す。"""
     out = []
@@ -87,10 +95,12 @@ def page_functions(*names: str) -> dict[str, Any]:
     defs = [n for n in tree.body if isinstance(n, ast.FunctionDef) and n.name in names]
     assert {d.name for d in defs} == set(names)
     # 定数 (NAME = リテラル) も取り込む (関数の既定値や本文が参照する)
-    consts = [n for n in tree.body if isinstance(n, ast.Assign) and isinstance(n.value, ast.Constant)]
+    consts = [n for n in tree.body if isinstance(n, ast.Assign) and (
+        isinstance(n.value, ast.Constant)
+        or (isinstance(n.value, ast.Dict) and all(isinstance(v, ast.Constant) for v in n.value.values)))]
     ns: dict[str, Any] = {"math": math, "np": np, "Any": Any, "ParamSpec": ParamSpec, "plots": plots,
                           "Surface": Surface, "class_balance": class_balance, "is_imbalanced": is_imbalanced,
-                          "dataclasses": dataclasses, "DataConfig": DataConfig}
+                          "dataclasses": dataclasses, "DataConfig": DataConfig, "TuningConfig": TuningConfig}
     exec(compile(ast.Module(body=consts + defs, type_ignores=[]), str(PAGE), "exec"), ns)
     return ns
 
@@ -113,6 +123,8 @@ def test_full_flow_2d_svm(monkeypatch):
     # 予定の試行回数が手法ごとに出る
     assert any("Grid 9 回" in c and "Random 9 回" in c and "TPE 9 回" in c for c in texts(at))
 
+    calls = record_plot_calls(monkeypatch)
+    at.session_state["tuning.value"] = "gap"  # 前に選んでいた値が残っていても、隠れたまま効かないこと (KU-01)
     result = run_search(at)
     assert result["config"].axes == ("C", "gamma")
     assert len(result["trials"]) == 27
@@ -125,15 +137,22 @@ def test_full_flow_2d_svm(monkeypatch):
     # マップが無ければ ③ の 1-SE の説明も出さない (② の検証曲線の説明の 1-SE は別物なので、書き出しで見分ける)
     assert not any(t.startswith(("枠で囲んだ範囲", "曲線の太い帯の区間")) for t in shown)
     assert any("CV の分け方と Random/TPE の乱数の両方" in t for t in shown)
+    # KU-01: マップが無い 2 次元では、背景は無地と書き、背景の値の切り替えは出さず "cv" に固定する
+    assert any("**背景**: 無地" in t for t in shown) and not any("(＋ が最良点)" in t for t in shown)
+    assert not [w for w in at.segmented_control if w.key == "tuning.value"]
+    assert calls["plot_search_heatmaps"][-1]["value"] == "cv"
+    # KU-11: 予定の試行回数とレース図の横軸が図に渡る
+    assert calls["plot_search_heatmaps"][-1]["planned"] == result["planned"]
+    assert calls["plot_best_so_far"][-1]["planned"] == result["planned"]
+    assert calls["plot_best_so_far"][-1]["x"] == "trial"
 
     # 再生・表示の切り替え・テスト評価では、探索の学習をやり直さない
     no_fitting(monkeypatch)
     at.slider(key=f"tuning.upto.{result['run_id']}").set_value(3).run()
     assert not at.exception, at.exception
-    at.segmented_control(key="tuning.value").set_value("gap").run()
-    assert not at.exception, at.exception
     at.segmented_control(key="tuning.race_x").set_value("time").run()
     assert not at.exception, at.exception
+    assert calls["plot_best_so_far"][-1]["x"] == "time"
 
     at.button(key="tuning.test_button").click().run()  # refit_and_test は evaluate を使わない
     assert not at.exception, at.exception
@@ -144,6 +163,11 @@ def test_full_flow_2d_svm(monkeypatch):
     assert "± SE" in table.columns
     assert all(0.0 < v < 0.2 for v in table["± SE"])  # 30 点のテスト: √(p(1−p)/30) ≤ 0.092
     assert any("誤差棒の重なりだけでは決められない" in t for t in texts(at))
+    # KU-11: ④ の図に渡る ± SE は、表と同じ runner.test_standard_error の値
+    y_test = result["data_config"].load()[3]
+    passed_se = calls["plot_cv_vs_test"][-1]["test_se"]
+    assert set(passed_se) == set(test)
+    assert all(passed_se[m] == tuning.runner.test_standard_error(v, y_test, "accuracy") for m, v in test.items())
 
     # データの設定を変えると「前回の結果」として警告付きで表示される
     monkeypatch.undo()  # 新しいデータでの検証曲線などは (キャッシュ関数の中で) 計算してよい
@@ -172,6 +196,9 @@ def test_1d_mode_without_test_data_and_model_switch():
     assert any("全探索マップ（参考）" in t for t in shown)
     assert any(t.startswith("曲線の太い帯の区間") and "1-SE ルール。ここでは fold 間の標準偏差で測る保守的な版" in t
                for t in shown)
+    # KU-01: マップがあるときは背景と ＋ を説明し、1 次元では背景の値の切り替えを出す (点の高さが変わる)
+    assert any("全探索マップ（参考） (＋ が最良点)" in t for t in shown)
+    assert [w for w in at.segmented_control if w.key == "tuning.value"]
     assert any("探索手法がこの線を超えることもある" in t for t in shown)
 
     at.slider(key=f"tuning.upto.{result['run_id']}").set_value(2).run()
@@ -184,18 +211,23 @@ def test_1d_mode_without_test_data_and_model_switch():
 
 def test_knn_on_iris_real_data():
     """AD-14.7: 実データ (Iris) × k-NN。標準化が探索に渡ること、無効なスライダーでは結果が古くならないこと、
-    データカードと ④ の参照、軸ラベル (単位つき) を 1 本で確かめる。"""
+    データカードと ④ の参照を 1 本で確かめる。
+
+    KU-02: 条件 (Iris・データのシード 0・標準化あり・k-NN・1 次元・5 試行・3 手法) では、テスト正解率が 3 手法とも
+    1.0 になる。そのときも ④ の ± SE が 0 にならないこと (補正した式) を確かめる。
+    """
     at = open_page(KNN, **{"data.n_samples": 100})
+    at.sidebar.number_input(key="data.seed").set_value(0)
     at.sidebar.selectbox(key="data.dataset").set_value("Iris").run()
     assert not at.exception, at.exception
     assert at.sidebar.checkbox(key="data.real.standardize").value  # 実データでは既定で on
     assert any(e.label == "データについて" for e in at.expander)
-    at.sidebar.slider(key="tuning.n_trials1d.low").set_value(5)
-    at.sidebar.pills(key="tuning.methods").set_value(["Grid", "Random"])
-    at.run()
+    at.sidebar.slider(key="tuning.n_trials1d.low").set_value(5).run()
     result = run_search(at)
+    assert result["config"].methods == ("Grid", "Random", "TPE")
     assert result["config"].standardize is True and result["data_config"].standardize is True
     assert result["config"].axes == ("n_neighbors",)
+    assert all(math.isfinite(t.mean_cv) for t in result["trials"]), [t.error for t in result["trials"]]
 
     eta = at.session_state["tuning.eta_seconds"]
     assert isinstance(eta, float)  # 丸める前の推定 (計測が読む)
@@ -219,6 +251,15 @@ def test_knn_on_iris_real_data():
     at.button(key="tuning.test_button").click().run()
     assert not at.exception, at.exception
     assert any("上の「データについて」を参照" in c.value for c in at.caption)
+    # KU-02 の前提: この条件ではテスト正解率が 3 手法とも 1.0。崩れたら、以下は何も確かめていないことになる
+    test = at.session_state["tuning_result"]["test"]
+    assert all(v == 1.0 for v in test.values()), (
+        f"前提が崩れた: テスト正解率 = {test}。条件（Iris・シード 0・標準化・k-NN・1 次元・5 試行）を選び直すこと")
+    table = at.dataframe[-1].value
+    assert all(v > 0 for v in table["± SE"]), table  # 全問正解でも誤差棒は 0 にならない
+    n_test = len(result["data_config"].load()[3])
+    assert any(c.value.startswith(f"テストは {n_test} 点なので、正解率は 1 点で {1 / n_test:.3f} 動く")
+               for c in at.caption)
 
 
 @pytest.mark.parametrize("y", ["degree", "なし"])
@@ -322,7 +363,8 @@ def test_tiny_fold_warning_and_failed_thumbnail(monkeypatch):
     assert not any("検証データが" in w.value for w in at.sidebar.warning)
     at.sidebar.radio(key="tuning.n_splits").set_value(10).run()
     assert not at.exception, at.exception
-    assert any("1 fold の検証データが 3 点しかない" in w.value for w in at.sidebar.warning)
+    assert any("1 fold の検証データが 3 点しかない" in w.value and "1 点で 0.333 動く" in w.value
+               for w in at.sidebar.warning)  # IZ-15 (b): 1/n を表と同じ小数 3 桁で
 
 
 def test_heavy_model_defaults_and_eta_warning(monkeypatch):
@@ -582,3 +624,40 @@ def test_draw_estimate_matches_r4_measurement():
     estimate = drawn + ns["HEAT_DRAW_SECONDS"] + ns["RACE_DRAW_SECONDS"]
     measured = 2.1
     assert 1.0 <= estimate / measured <= 1.5, estimate
+
+
+def test_background_note_follows_surface():
+    note = page_functions("background_note")["background_note"]
+    with_map, without = note(True), note(False)
+    assert "(＋ が最良点)" in with_map and "無地" not in with_map
+    assert "無地" in without and "計算していない" in without and "＋" not in without
+
+
+def test_previous_run_text_for_synthetic_and_real_data():
+    """KU-04: 実データでは n / noise ではなく、特徴量の組と (k-NN / SVM なら) 標準化を出す。指標は UI の表記。"""
+    text = page_functions("previous_run_text")["previous_run_text"]
+    moons = DataConfig("Moons", 100, 0.2, 42, 0.3).normalized()
+    cfg = TuningConfig(KNN, ("n_neighbors",), (), ("Grid",), 9, 5, "accuracy", 0)
+    assert text(cfg, moons, True).startswith("前回: Moons (n=100, noise=0.2, テスト 30%) × ")
+    penguins = DataConfig("Palmer Penguins", None, None, 0, 0.3, standardize=True).normalized()
+    spec = penguins.spec()
+    labels = " × ".join(spec.feature(k).label_ja for k in penguins.features)
+    knn = text(dataclasses.replace(cfg, scoring="roc_auc"), penguins, True)
+    assert f"特徴量 {labels}、標準化 あり、テスト 30%" in knn
+    assert "None" not in knn and "ROC AUC" in knn and "roc_auc" not in knn
+    dt = text(dataclasses.replace(cfg, model_name=DT), dataclasses.replace(penguins, standardize=False), False)
+    assert "標準化" not in dt and "正解率 (accuracy)" in dt
+
+
+def test_se_caption_wording():
+    """KU-02 / IZ-15 (b): ④ の ± SE の説明。補正した式であることを書き、言い過ぎの語は使わない。"""
+    caption = page_functions("test_se_caption")["test_se_caption"]
+    acc, auc = caption("accuracy", 30), caption("roc_auc", 30)
+    assert "1 点で 0.033 動く" in acc and "Agresti–Coull 型の補正" in acc and "0 にならない" in acc
+    assert "√(p(1−p)/n)" not in acc and "大きめ" not in acc  # p が 0.5 の近くでは補正後の方が小さい
+    assert "Hanley & McNeil (1982)" in auc and "すべての値にかけている" in auc and "補正なしの式より大きめ" in auc
+    # 補正の強さを決めるのは多い方のクラスの点数 M (Ã = (M·A + 2) / (M + 4))。少ない方の m は約分で消える
+    assert "多い方のクラスの点数が多いほど補正は小さい" in auc and "少ない方" not in auc
+    for text in (acc, auc):
+        assert "観測したスコアのまま" in text
+        assert not any(word in text for word in ("保守的", "常に", "68%"))

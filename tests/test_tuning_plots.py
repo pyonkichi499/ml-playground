@@ -3,6 +3,7 @@
 import io
 import math
 import time
+from dataclasses import replace
 
 import numpy as np
 import pytest
@@ -319,7 +320,7 @@ def test_cv_vs_test_with_standard_errors():
     se = {"Grid": 0.03, "Random": 0.035, "TPE": float("nan")}
     fig = plots.plot_cv_vs_test(best, test, test_se=se)
     ax = fig.axes[0]
-    assert "test ± 1 SE (finite test set)" in [t.get_text() for t in ax.get_legend().get_texts()]
+    assert "test ± 1 SE (adjusted)" in [t.get_text() for t in ax.get_legend().get_texts()]
     txt = _all_text(fig)
     assert "test 0.900 ± 0.030" in txt and "test 0.880" in txt and "0.880 ±" not in txt
     # テストの ▲ は TEST_COLOR (▲ はテスト専用)
@@ -677,3 +678,101 @@ def test_fold_assignment_class_labels_real_and_synthetic():
     fig2 = plots.plot_fold_assignment(X2, y2, Xt2, make_cv(N_FOLDS, 0), class_labels=ctx2.class_labels)
     assert {"class 0", "class 1"} <= set(legend_texts(fig2))
     assert "class 0" in legend_texts(plots.plot_fold_assignment(X2, y2, Xt2, make_cv(N_FOLDS, 0)))  # 既定
+
+
+# ---------------------------------------------------------------- KU-02 / KU-11: 誤差棒 (Artist で確かめる)
+def _errorbars(ax):
+    """ax.errorbar の (中心 x, 中心 y, 左端 x, 右端 x, 誤差棒の線があるか) の一覧 (描いた順)。"""
+    out = []
+    for c in ax.containers:
+        data_line, _, bar_lines = c.lines
+        x, y = data_line.get_xdata()[0], data_line.get_ydata()[0]
+        if bar_lines:
+            (x0, _), (x1, _) = bar_lines[0].get_segments()[0]
+            out.append((x, y, x0, x1, True))
+        else:
+            out.append((x, y, None, None, False))
+    return out
+
+
+def _best_for(trials):
+    return {m: max((t for t in trials if t.method == m), key=lambda t: t.mean_cv) for m in METHODS}
+
+
+def test_cv_vs_test_error_bar_lengths_and_centres():
+    """KU-11: テストの ▲ の誤差棒は、中心が観測したスコア、半分の長さが test_se に一致 (切られない中ほどの値)。
+    SE が NaN の手法は誤差棒の線を描かない。"""
+    best = _best_for(make_trials())
+    test = {"Grid": 0.80, "Random": 0.70, "TPE": 0.75}
+    se = {"Grid": 0.031, "Random": 0.045, "TPE": float("nan")}
+    fig = plots.plot_cv_vs_test(best, test, test_se=se)
+    bars = _errorbars(fig.axes[0])
+    tests = [b for b in bars if abs(b[1] - round(b[1]) - 0.2) < 1e-9]  # ▲ は y = i + 0.2
+    assert len(tests) == 3
+    for (x, _, x0, x1, has), m in zip(tests, METHODS):
+        assert x == pytest.approx(test[m])  # 中心は観測した値
+        if m == "TPE":
+            assert not has
+        else:
+            assert has and (x1 - x) == pytest.approx(se[m], abs=1e-9) and (x - x0) == pytest.approx(se[m], abs=1e-9)
+
+
+def test_cv_vs_test_error_bars_clipped_to_unit_interval():
+    """KU-02: 正解率 1.0 のとき、中心は 1.0 のまま、上側の腕は長さ 0 (上端 ≤ 1)。CV の ± std の棒も上端 ≤ 1。
+    注記の ± の値は切らない (test_se のまま)。"""
+    trials = make_trials()
+    best = _best_for(trials)
+    wide = {m: replace(t, mean_cv=0.98, std_cv=0.05) for m, t in best.items()}  # CV 平均 + std が 1 を超える
+    se = {m: 0.0404 for m in METHODS}
+    fig = plots.plot_cv_vs_test(wide, {m: 1.0 for m in METHODS}, test_se=se)
+    for x, _, x0, x1, has in _errorbars(fig.axes[0]):
+        assert has and x1 <= 1.0 + 1e-12 and x0 >= 0.0
+    tests = [b for b in _errorbars(fig.axes[0]) if b[0] == 1.0]
+    assert len(tests) == 3 and all(x0 == pytest.approx(1.0 - 0.0404) and x1 == 1.0 for _, _, x0, x1, _ in tests)
+    cvs = [b for b in _errorbars(fig.axes[0]) if b[0] == pytest.approx(0.98)]
+    assert all(x0 == pytest.approx(0.93) and x1 == pytest.approx(1.0) for _, _, x0, x1, _ in cvs)
+    assert "test 1.000 ± 0.040" in _all_text(fig)
+
+
+def test_best_so_far_planned_sets_x_range():
+    """KU-11: planned が横軸の範囲を決める (試行が少なくても、予定の最大まで軸がある)。"""
+    trials = make_trials(n=5)
+    small = plots.plot_best_so_far(trials, METHODS, planned={m: 5 for m in METHODS}).axes[0].get_xlim()
+    large = plots.plot_best_so_far(trials, METHODS, planned={"Grid": 9, "Random": 30, "TPE": 30}).axes[0].get_xlim()
+    assert small[1] >= 5 and large[1] >= 30 and large[1] > small[1]
+
+
+# ---------------------------------------------------------------- KU-12: ヒートマップの背景 (AD-7)
+def _is_muted_background(cmap) -> bool:
+    """AD-7 の「背景は彩度の低い単色系」の判定:
+    (1) マップ全体 (41 点) のどの色も、手法色 (METHOD_COLORS) から CIELAB ΔE76 ≥ 20 離れている (試行のマーカーが埋もれない)
+    (2) 明度 L* が単調に下がる (低いスコア = 明るい、高いスコア = 暗い。明度だけで読める)
+    両端だけの ΔE では viridis も通ってしまう (端の最小 ΔE ≈ 30) ので、マップ全体で見る (viridis は途中の緑で ≈ 6)。
+    """
+    xs = np.linspace(0.0, 1.0, 41)
+    colors = [cmap(float(x))[:3] for x in xs]
+    labs = [_lab(c) for c in colors]
+    methods = [_lab(c) for c in plots.METHOD_COLORS.values()]
+    far = min(float(np.linalg.norm(a - b)) for a in labs for b in methods) >= 20
+    lightness = [a[0] for a in labs]
+    monotone = all(l1 > l2 for l1, l2 in zip(lightness, lightness[1:]))
+    return far and monotone
+
+
+def _lab(rgb) -> np.ndarray:
+    from matplotlib.colors import to_rgb
+
+    c = np.array(to_rgb(rgb))
+    lin = np.where(c <= 0.04045, c / 12.92, ((c + 0.055) / 1.055) ** 2.4)
+    xyz = np.array([[0.4124, 0.3576, 0.1805], [0.2126, 0.7152, 0.0722], [0.0193, 0.1192, 0.9505]]) @ lin
+    xyz = xyz / np.array([0.95047, 1.0, 1.08883])
+    f = np.where(xyz > 0.008856, np.cbrt(xyz), 7.787 * xyz + 16 / 116)
+    return np.array([116 * f[1] - 16, 500 * (f[0] - f[1]), 200 * (f[1] - f[2])])
+
+
+def test_score_cmap_is_muted_single_hue_and_viridis_is_not():
+    """KU-12: SCORE_CMAP は判定を満たし、viridis に戻すと同じ判定が False になる (本物の SCORE_CMAP は書き換えない)。"""
+    import matplotlib
+
+    assert _is_muted_background(plots.SCORE_CMAP)
+    assert not _is_muted_background(matplotlib.colormaps["viridis"])

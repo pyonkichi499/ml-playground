@@ -177,11 +177,38 @@ def test_scores(
     return out
 
 
-def test_standard_error(score: float, y_test: np.ndarray, scoring: str) -> float:
-    """有限のテストデータで測ったスコアの標準誤差 (テスト点の選ばれ方による揺らぎ)。
+def _hanley_mcneil_se(a: float, n_pos: int, n_neg: int) -> float:
+    """Hanley & McNeil (1982) の AUC の標準誤差 (a = AUC、n_pos = 正例の数、n_neg = 負例の数)。"""
+    q1 = a / (2 - a)
+    q2 = 2 * a * a / (1 + a)
+    var = (a * (1 - a) + (n_pos - 1) * (q1 - a * a) + (n_neg - 1) * (q2 - a * a)) / (n_pos * n_neg)
+    return math.sqrt(max(var, 0.0))
 
-    - accuracy: 二項分布の SE = sqrt(p (1 - p) / n)
-    - roc_auc: Hanley & McNeil (1982) の近似 (正例数・負例数から計算)
+
+def _adjusted_auc(a: float, n_pos: int, n_neg: int) -> float:
+    """SE の計算の中だけで使う、1/2 の側へ寄せた AUC: (A n1 n0 + 2 m) / (n1 n0 + 4 m) = (M A + 2) / (M + 4)。"""
+    m = min(n_pos, n_neg)
+    return (a * n_pos * n_neg + 2 * m) / (n_pos * n_neg + 4 * m)
+
+
+def test_standard_error(score: float, y_test: np.ndarray, scoring: str) -> float:
+    """有限のテストデータで測ったスコアの標準誤差の近似 (テスト点の選ばれ方による揺らぎ)。
+
+    教科書の式 (accuracy の Wald 型 sqrt(p (1 - p) / n)、roc_auc の Hanley & McNeil (1982)) にそのまま従うのではなく、
+    境界 (正解率 1 や 0、AUC 1) で 0 にならないよう補正した推定を返す。テストデータが有限である限り、全問正解でも
+    不確かさはゼロではないため (テスト 30 点で 30 点正解でも、真の正解率の片側 95% の下限 (厳密な二項) は約 0.905。両側なら 0.884)。
+      - accuracy: Agresti–Coull 型。正解 2 点と不正解 2 点を足して p~ = (x + 2) / (n + 4)、
+        SE = sqrt(p~ (1 - p~) / (n + 4))  (x = p n)。例: n=30 で p=1 → 0.0404 (Wald 0)、p=0.9 → 0.0607 (Wald 0.0548)。
+        p が 0.5 の近くでは Wald より少し小さい。
+      - roc_auc: 擬似ペアを足して AUC を 1/2 の側へ寄せ、A~ = (A n1 n0 + 2 m) / (n1 n0 + 4 m) (m = min(n1, n0))、
+        その A~ で Hanley & McNeil の式を計算する (n1 = 正例、n0 = 負例)。n1 n0 = m M なので約分すると
+        A~ = (M A + 2) / (M + 4) = (1 − w) A + w / 2、w = 4 / (M + 4) (M = max(n1, n0) = 多い方のクラスの点数)。
+        m は定義に出てくるが、約分で消える。縮めの強さ (w) は M で決まる。
+        これとは別に、SE の大きさは Hanley & McNeil の分散の中の n1・n0 で決まり、少ない方のクラスが少ないほど大きい。
+        例: A=1 で n1=n0=30 → 0.0320、n1=n0=15 → 0.0612、n1=14, n0=16 → 0.0611。
+        A が 1 に近いとき (A ≥ 0.9 の格子で確認) は補正なしの式より大きい。補正はすべての値にかける (境界だけの特例はない)。
+    どちらも誤差棒の **中心は観測した値** (p、A) のまま。p~ / A~ は SE の計算の中だけで使い、表示しない
+    (A~ を中心にすると、観測した値 (AUC 1.0 など) が区間に含まれなくなる。例: A~=0.895、SE=0.061 の区間 [0.83, 0.96])。±1 SE が約 68% を含むとは約束しない (近似)。
     score が NaN、テストが空、片方のクラスしか無い (roc_auc) ときは NaN。
     同じテストデータで比べる手法間の差は対応のある比較なので、差の揺らぎはこの誤差棒の重なりより小さくなりうる。
     """
@@ -194,13 +221,10 @@ def test_standard_error(score: float, y_test: np.ndarray, scoring: str) -> float
         n_neg = n - n_pos
         if n_pos == 0 or n_neg == 0:
             return float("nan")
-        a = float(score)
-        q1 = a / (2 - a)
-        q2 = 2 * a * a / (1 + a)
-        var = (a * (1 - a) + (n_pos - 1) * (q1 - a * a) + (n_neg - 1) * (q2 - a * a)) / (n_pos * n_neg)
-        return math.sqrt(max(var, 0.0))
-    p = float(score)
-    return math.sqrt(max(p * (1 - p), 0.0) / n)
+        return _hanley_mcneil_se(_adjusted_auc(float(score), n_pos, n_neg), n_pos, n_neg)
+    x = float(score) * n
+    p_adj = (x + 2) / (n + 4)
+    return math.sqrt(max(p_adj * (1 - p_adj), 0.0) / (n + 4))
 
 
 # pytest が test_ で始まる関数をテストとして収集しないように
