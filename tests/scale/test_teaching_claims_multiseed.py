@@ -5,6 +5,8 @@ import せず、同じ主張を独立に書く (AD-17。役割が違う: 既定�
 
 主張の 3 種類 (判定の規則と閾値は _scale_common.py の 1 か所だけにある):
 - A 恒等式・構造: どのデータでも成り立つはずのもの。シード 0〜19 で 20/20 (assert_exact)。
+  例外: スケーリングの節の NB / QDA (reg_param = 0) の 1 テストは恒等式ではなく、測った条件 (Moons、シード 0〜19、3 変換) での
+  観測が 20/20 だったという意味 (同じ assert_exact で判定するが、測っていない範囲には何も言わない)。
 - B テスト側で導いた、UI の文言より強い性質: 反例があっても赤にせず xfail (check_derived)。反例は、その性質を
   1 シードで書いているテストの持ち主に TL 経由で伝え、docstring の見直しを頼む。
 - C 傾向: シード 0〜39 で 28 以上なら合格、23 以下なら不合格、24〜27 ならシード 0〜79 で 53 以上 (assert_tendency)。
@@ -70,6 +72,8 @@ NONLINEAR = 0.05  # くっきり曲がる境界 (多項式・ReLU)
 CURVED = 1e-3  # 緩やかな 2 次曲線 (Moons の NB など)
 PROBA_MARGIN = 1e-6
 MIN_GRID_POINTS = 100
+# L2 の係数を「0 とみなす」境目。検証する側の定義に頼らないよう、モデルの定数を import せずにここで決める (値は 1e-8)
+L2_NEAR_ZERO = 1e-8
 
 
 @functools.cache
@@ -122,7 +126,7 @@ def guarded(fn):
 
 
 # ================================================================ 判定の規則そのものの確認 (モデルを学習しない。1 秒未満)
-# 実際の主張では第 2 段階と B の xfail がまだ一度も通っていないので (レビューの指摘 R1)、偽の主張で経路と境界を確かめる
+# 実際の主張では、第 2 段階に入る場合と B の xfail になる場合がまだ一度も起きていないので、偽の主張でその経路と閾値の境界を確かめる
 def test_judging_rules_stage_boundaries_and_paths():
     """_scale_common の A / B / C の判定の経路と閾値の境界 (23/24、27/28、52/53) を偽の主張で確かめる。"""
     assert (TENDENCY_STAGE1_FAIL, TENDENCY_STAGE1_PASS, TENDENCY_STAGE2_PASS) == (23, 28, 53)  # AD-17 の確定値
@@ -220,12 +224,10 @@ def test_C_logreg_l1_sets_some_but_not_all_coefficients_to_exactly_zero():
 @guarded
 def test_C_logreg_l2_keeps_every_coefficient_nonzero():
     """C。penalty の help「L2 は全ての係数を少しずつ小さくする」— L1 と同じ条件で、0 とみなせる係数が無い。"""
-    from models.logistic_regression import ZERO_TOL
-
     def holds(seed):
         X, _, y, _, _ = load("Moons", seed)
         return all(int(np.sum(np.abs(LogisticRegressionModel().fit(
-            X, y, {"degree": 5, "C": C, "penalty": "l2"})._coef) <= ZERO_TOL)) == 0 for C in (0.1, 1.0))
+            X, y, {"degree": 5, "C": C, "penalty": "l2"})._coef) <= L2_NEAR_ZERO)) == 0 for C in (0.1, 1.0))
     assert_tendency("logreg L2 no zeros", holds)
 
 
@@ -418,6 +420,68 @@ def test_C_rf_default_trees_differ_clearly():
     assert_tendency("rf default trees differ", holds)
 
 
+# 木の数と OOB (RF と GB の対比)。データは下の GB の「増やしすぎると過学習する」と同じ設定 (Moons, n=300, noise=0.4)
+N_TREES_RF = 200
+RF_MIN_PREFIX = 25  # 先頭 25 本より少ない森はまだ平均が安定していないので、比べる範囲に入れない
+RF_MAX_RISE = 0.05
+
+
+def _rf_prefix_test_loss(model: RandomForestModel, X_test: np.ndarray, y_test: np.ndarray) -> np.ndarray:
+    """先頭 k 本 (k = 1..N) の木の確率の平均で予測したときの、テストの log-loss。"""
+    per_tree = np.stack([t.predict_proba(X_test)[:, 1] for t in model.estimator.estimators_])
+    prefix = np.cumsum(per_tree, axis=0) / np.arange(1, len(per_tree) + 1)[:, None]
+    p = np.clip(prefix, 1e-15, 1 - 1e-15)
+    return -(y_test * np.log(p) + (1 - y_test) * np.log(1 - p)).mean(axis=1)
+
+
+@guarded
+def test_C_rf_more_trees_do_not_overfit():
+    """C。n_estimators の help「多いほど平均がとれて予測が安定する。木を増やすこと自体で過学習が進むことはない (深い木の過学習そのものは残る) が、計算は重くなる」—
+    200 本の森を 1 回学習し、先頭 k 本の平均で予測したときのテストの log-loss について、
+    「200 本の値 − k ≥ 25 での最小値 ≤ 0.05」(木を増やしても、テストの損失はほとんど悪くならない)。
+    同じデータの GB は、下の test_C_gb_too_many_trees_overfits のとおり、木を増やしすぎるとテストの損失が悪くなる (対比)。
+    前提: 先頭 k 本の平均 = n_estimators=k の森 (random_state が同じなので木の並びが同じ)。シード 0 の k = 25 で確かめる。
+    help の括弧の側 (深い木の過学習そのものは残る) の裏付けとして、どのシードでも訓練の正解率が 1.0 であることも確かめる。
+    物差しに正解率を使わないのは、テスト 90 点では 1 点 = 0.011 の段差で揺れが大きいため。
+    実測の要約: この範囲の 40 シードで 40/40。悪化の最大は約 0.03 (合格線は 0.05)。"""
+    X, Xt, y, yt, _ = load("Moons", 0, n_samples=300, noise=0.4)
+    big = RandomForestModel().fit(X, y, {"n_estimators": N_TREES_RF})
+    small = RandomForestModel().fit(X, y, {"n_estimators": RF_MIN_PREFIX})
+    prefix = np.mean([t.predict_proba(Xt)[:, 1] for t in big.estimator.estimators_[:RF_MIN_PREFIX]], axis=0)
+    np.testing.assert_allclose(prefix, small.predict_proba(Xt), atol=1e-12)
+
+    train_acc: dict[int, float] = {}
+
+    def holds(seed):
+        X, Xt, y, yt, _ = load("Moons", seed, n_samples=300, noise=0.4)
+        model = RandomForestModel().fit(X, y, {"n_estimators": N_TREES_RF})
+        train_acc[seed] = float(np.mean(model.predict(X) == y))
+        loss = _rf_prefix_test_loss(model, Xt, yt)
+        return loss[-1] - loss[RF_MIN_PREFIX - 1:].min() <= RF_MAX_RISE
+    assert_tendency("rf more trees do not overfit (n=300, noise=0.4)", holds)
+    assert all(a == 1.0 for a in train_acc.values()), {s: a for s, a in train_acc.items() if a != 1.0}
+
+
+@guarded
+def test_C_rf_oob_estimates_test_accuracy():
+    """C。bootstrap の help「各木を訓練データの復元抽出で学習する。選ばれなかった点 (OOB) で汎化性能を見積もれる」—
+    100 本 (既定) の森で、画面の「OOB 正解率」は訓練の正解率よりテストの正解率に近い: |OOB − テスト| < |訓練 − テスト|。
+    データは上と同じ。OOB の予測が無い点 (どの木でも学習に使われた点) があると OOB 正解率はその点を除いて計算されるので、
+    その数のシードごとの最大も出力する。
+    実測の要約: この範囲の 40 シードで 39/40 (シード 10 だけ不成立)。OOB の予測が無い点は全シードで 0 点。"""
+    excluded: dict[int, int] = {}
+
+    def holds(seed):
+        X, Xt, y, yt, _ = load("Moons", seed, n_samples=300, noise=0.4)
+        model = RandomForestModel().fit(X, y, {"n_estimators": 100})
+        excluded[seed] = model.oob_n_excluded
+        test = float(np.mean(model.predict(Xt) == yt))
+        train = float(np.mean(model.predict(X) == y))
+        return abs(model.oob_accuracy - test) < abs(train - test)
+    assert_tendency("rf oob closer to test than train", holds)
+    print(f"[scale-claim] rf oob: points without an OOB prediction, max over seeds = {max(excluded.values())}")
+
+
 # ================================================================ 勾配ブースティング (models/gradient_boosting.py)
 @guarded
 def test_B_gb_train_loss_does_not_increase():
@@ -496,6 +560,81 @@ def test_C_gb_too_many_trees_overfits():
     assert_tendency("gb too many trees overfit (n=300, noise=0.4, lr=0.3)", holds)
 
 
+GB_OOB_MAX_RATIO = 0.1  # 「訓練損失とほぼ同じ」の物差し: OOB と訓練の差が、OOB とテストの差の 1 割以下
+
+
+@guarded
+@pytest.mark.parametrize("subsample", [0.7, 0.3])  # 0.3 は UI で選べる最小の値
+def test_C_gb_oob_follows_train_loss_not_test_loss(subsample):
+    """C。キャプション「GB の OOB 推定 (sklearn の oob_scores_) は前の木の学習に使った点で測るので訓練損失とほぼ同じになり、
+    木の数選びには使えません (ランダムフォレストの OOB とは違います)」— subsample < 1・300 本で、木を足すごとの
+    OOB の損失は、訓練の損失とほぼ同じで、テストの損失とは大きく違う:
+    mean|OOB − 訓練| ≤ 0.1 × mean|OOB − テスト| (全段階の平均)。「テストより訓練に近い」だけでは、「ほぼ同じ」を確かめたことにならない。
+    データは上の「増やしすぎると過学習する」と同じ (Moons, n=300, noise=0.4)。学習率 0.1・深さ 3 は既定。
+    物差しは log-loss (GB の oob_scores_ が損失のため。ランダムフォレストの OOB は正解率で表示される)。sklearn の oob_scores_ は
+    log-loss の 2 倍 (deviance) を記録するので、2 で割って比べる。
+    実測の要約: この範囲の 40 シードで、比は subsample 0.7 で最大約 0.06、0.3 で最大約 0.04 (合格線は 0.1)。"""
+    def holds(seed):
+        X, Xt, y, yt, _ = load("Moons", seed, n_samples=300, noise=0.4)
+        model = GradientBoostingModel().fit(X, y, {"n_estimators": 300, "subsample": subsample})
+        oob = model.estimator.oob_scores_ / 2
+        train, test = staged_log_loss(model, X, y), staged_log_loss(model, Xt, yt)
+        return float(np.abs(oob - train).mean()) <= GB_OOB_MAX_RATIO * float(np.abs(oob - test).mean())
+    assert_tendency(f"gb oob follows train loss (subsample {subsample})", holds)
+
+
+# ================================================================ 決定木 (models/decision_tree.py)
+DT_REAL_CASES = [("Palmer Penguins", None), ("Palmer Penguins", ("bill_length_mm", "body_mass_g")),
+                 ("Iris", None), ("Iris", ("sepal_length", "sepal_width"))]
+
+
+def _dt_cases():
+    """(名前, X_train, y_train, 分割の基準) の 70 通り: 合成 3 種 (n=300, noise=0.2) と実データ 4 組 × シード 0〜4 × gini/entropy。"""
+    cases = []
+    for dataset in ("Moons", "Circles", "Linear Separable"):
+        for seed in range(5):
+            X, _, y, _ = DataConfig(dataset, 300, 0.2, seed, TEST_SIZE).load()
+            cases += [(f"{dataset} seed {seed}", X, y, c) for c in ("gini", "entropy")]
+    for dataset, features in DT_REAL_CASES:
+        for seed in range(5):
+            X, _, y, _ = DataConfig(dataset, None, None, seed, TEST_SIZE, features=features).load()
+            cases += [(f"{dataset} {features or 'default'} seed {seed}", X, y, c) for c in ("gini", "entropy")]
+    return cases
+
+
+@guarded
+def test_B_decision_tree_deeper_does_not_lower_train_accuracy():
+    """B。max_depth の help「深いほど細かく分割でき、訓練データにぴったり合う（過学習しやすい）」から導いた
+    「深さを 1 上げても、訓練の正解率は下がらない」。70 通り (合成 3 種と実データ 4 組 × シード 0〜4 × gini/entropy)
+    × 深さ 1〜15 で、深さ d+1 の訓練正解率が深さ d より下がった回数を数え、0 回なら合格。
+    保証される性質ではない: 深さごとに別々に学習するので、同点の分割の選び方で木の形が変わる (深さ d の木が、深さ d+1 の
+    木を切り詰めたものになるとは限らない)。この範囲の実測で、切り詰めの性質は 980 回の比較のうち 93 回成り立たない
+    (31/70 通りで 1 回以上)。別々の学習で訓練正解率が下がった例は、同じ 980 回の比較で 0 件。
+    反例があれば xfail にし、反例 (データ・シード・基準・深さ) を全部 reason に並べる。"""
+    cases = _dt_cases()
+    assert len(cases) == 70
+    failures: list[str] = []
+
+    def check(i):
+        name, X, y, criterion = cases[i]
+        prev, bad = -1.0, []
+        for depth in range(1, 16):
+            model = DecisionTreeModel().fit(X, y, {"max_depth": depth, "criterion": criterion, "min_samples_leaf": 1})
+            acc = float(np.mean(model.predict(X) == y))
+            if acc < prev:
+                bad.append(f"depth {depth - 1}->{depth}: {prev:.4f}->{acc:.4f}")
+            prev = acc
+        failures.extend(f"{name} {criterion} {b}" for b in bad)
+        return not bad, f"{name} {criterion}: {bad}"
+    try:
+        check_derived("decision tree train accuracy does not drop with depth",
+                      "Models (tests/test_models_decision_tree.py)",
+                      "深いほど細かく分割でき、訓練データにぴったり合う（過学習しやすい）", check, seeds=range(len(cases)))
+    except pytest.xfail.Exception as exc:
+        # check_derived の reason は最初の 5 件まで。反例は全部並べる
+        pytest.xfail(f"{exc} 全 {len(failures)} 件: " + "; ".join(failures))
+
+
 # ================================================================ MLP (models/mlp.py)
 @guarded
 @pytest.mark.parametrize("n_layers", [1, 3])
@@ -550,18 +689,25 @@ def test_C_mlp_large_alpha_shrinks_weights():
 
 
 # ================================================================ スケーリング (AD-14.4、knn.py / svm.py の scale_sensitive)
-# 変換は現実的な単位の範囲だけ (極端な比 ≳1e5 は主張の範囲外)
+# 測った変換は下の 2 つの倍率 (と平行移動) と標準化だけ。データは Moons (n = 200、noise = 0.3、特徴量は 1 程度の大きさ)。
+# これ以外の倍率 (もっと小さい倍率、極端な比) は測っていないので、ここからは何も言えない (AD-14.4: 単位で結果が変わることがある)
 SCALINGS = {
     "penguins_ratio": (np.array([1.0, 400.0]), np.array([30.0, 3000.0])),
     "unit_change": (np.array([10.0, 1000.0]), np.array([-5.0, 250.0])),
     "standardize": None,
 }
+# 拡大縮小で不変と言ってよいもの (AD-14.4: 決定木と LDA)。RF (n_estimators = 10) と GB (n_estimators = 30) は、この 1 設定で
+# 測った結果だけを言う (木の分割は順序だけで決まるので不変のはず、というのは理屈で、他の設定は測っていない)
 SCALE_INVARIANT = {
     "decision_tree": (DecisionTreeModel, {"max_depth": None}),
     "random_forest": (RandomForestModel, {"n_estimators": 10}),
     "gradient_boosting": (GradientBoostingModel, {"n_estimators": 30}),
-    "naive_bayes": (GaussianModel, {"variant": "nb"}),
     "lda": (GaussianModel, {"variant": "lda"}),
+}
+# 不変とは言えないもの (AD-14.4: NB は var_smoothing、QDA (reg_param = 0) は絶対値で決まる)。
+# ここでは「上の SCALINGS の倍率で、Moons のシード 0〜19 の 400 点の格子で、予測クラスが変わらなかった」ことだけを確かめる
+SCALE_UNCHANGED_IN_MEASURED_RANGE = {
+    "naive_bayes": (GaussianModel, {"variant": "nb"}),
     "qda": (GaussianModel, {"variant": "qda", "reg_param": 0.0}),
 }
 SCALE_SENSITIVE = {"knn": (KNNModel, {}), "svm": (SVMModel, {})}
@@ -570,11 +716,16 @@ SCALE_SENSITIVE = {"knn": (KNNModel, {}), "svm": (SVMModel, {})}
 # (2026-09-26 の multiseed の実行)。格子点がちょうど閾値に乗って丸めで揺れたら、ここで落ちて気づける
 TREE_MIN_AGREEMENT = 0.999
 # NB の確率には var_smoothing (1e-9 × 全特徴量の最大分散を各分散に足す) による小さな差が残る。
-# AD-14.4 の訂正 (2026-09-26、architecture.md の Decision log。この multiseed の反例による): Penguins の ×400 の比で
-# シード 20 通りの最大は約 1.2e-4 (旧記述「約 1e-5」はシード 0 だけの実測)。許容は 1e-3 (約 8 倍の余裕)。
-# 判定の主は予測クラスの一致率 1.0 (本物のスケール依存である reg_param > 0 の QDA は、予測クラスが変わるので捕まる)
+# 正本は docs/decisions.md の AD-14.4。この multiseed の反例で旧記述が訂正された: Moons に SCALINGS の penguins_ratio
+# (×(1, 400)。倍率は Penguins の比に由来するが、データは Moons) を掛けたとき、シード 20 通りの確率差の最大は約 1.2e-4
+# (旧記述「約 1e-5」はシード 0 だけの実測)。許容は 1e-3 (約 8 倍の余裕)。Penguins 実データでの値 (AD-14.4 の ×10 で約 1.7e-3 など) とは別の測定。
+# これは測った範囲の記述で、NB が単位に依らないという意味ではない。docs/decisions.md の AD-14.4 のとおり、NB の予測クラスは
+# 単位で変わりうる (AD-14.4 の記録では、Penguins 実データの ×100 や ×0.0025 で変わった。このファイルでは測っていない)。
+# QDA (reg_param = 0) は、単位を小さくする側 (AD-14.4 の記録: Penguins の高さ ×0.01 以下など) で LinAlgError になる。ここの倍率は
+# すべて拡大側か標準化で、その失敗する範囲は測っていない。判定の主は予測クラスの一致率 1.0
+# (本物のスケール依存である reg_param > 0 の QDA は、予測クラスが変わるので捕まる)
 NB_PROBA_TOL = 1e-3
-LDA_QDA_PROBA_TOL = 1e-9  # AD-14.4: 約 1e-15
+LDA_QDA_PROBA_TOL = 1e-9  # LDA は約 1e-15 (AD-14.4)。QDA (reg_param = 0) は測った倍率での実測が同程度だったので同じ許容
 CHANGED_MAX_AGREEMENT = 0.99
 
 
@@ -593,11 +744,10 @@ def fit_raw_and_scaled(model_cls, params, scaling, seed, standardize=False):
 @guarded
 @pytest.mark.parametrize("scaling", list(SCALINGS))
 @pytest.mark.parametrize("model_key", list(SCALE_INVARIANT))
-def test_A_trees_and_gaussian_are_scale_invariant(model_key, scaling):
-    """A。AD-14.4 (修正後)「木と Gaussian の NB / LDA / QDA (reg_param = 0) は、現実的な単位の範囲で特徴量ごとの
-    スケーリングに不変 (木は完全一致、LDA/QDA は約 1e-15)」と、2026-09-26 の訂正「NB の予測クラスは単位の変更で
-    変わらない。確率には var_smoothing による小さな差が残り、Penguins の ×400 でシード 20 通りの最大は約 1.2e-4」。
-    Gaussian は予測クラスの一致率 1.0 を主な判定にし、確率の差は NB 1e-3 / LDA・QDA 1e-9 の許容で見る。"""
+def test_A_trees_and_lda_are_scale_invariant(model_key, scaling):
+    """A。AD-14.4「決定木と LDA は特徴量ごとの拡大縮小で結果が変わらない (違いは数値の誤差の範囲)。
+    『スケールに左右されない』と言えるのはこの 2 つだけ」。木 (決定木、RF と GB はこの 1 設定で) は予測が完全一致、LDA は予測クラスの
+    一致率 1.0 と確率の差 1e-9 以下 (実測は約 1e-15)。Moons のシード 0〜19 × SCALINGS の 3 変換。"""
     model_cls, params = SCALE_INVARIANT[model_key]
 
     def check(seed):
@@ -605,12 +755,31 @@ def test_A_trees_and_gaussian_are_scale_invariant(model_key, scaling):
         agreement = float(np.mean(raw.predict(grid) == scaled.predict(grid_t)))
         diff = np.abs(raw.predict_proba(grid) - scaled.predict_proba(grid_t))
         if model_cls is GaussianModel:
-            tol = NB_PROBA_TOL if params["variant"] == "nb" else LDA_QDA_PROBA_TOL
-            return agreement == 1.0 and diff.max() <= tol, f"agreement {agreement}, proba diff {diff.max():.1e}"
+            return agreement == 1.0 and diff.max() <= LDA_QDA_PROBA_TOL, f"agreement {agreement}, proba diff {diff.max():.1e}"
         frac = float(np.mean(diff > 1e-12))
         return agreement >= TREE_MIN_AGREEMENT and frac <= 1 - TREE_MIN_AGREEMENT, \
             f"agreement {agreement}, differing proba {frac}"
     assert_exact(f"{model_key} invariant to {scaling}", check)
+
+
+@guarded
+@pytest.mark.parametrize("scaling", list(SCALINGS))
+@pytest.mark.parametrize("model_key", list(SCALE_UNCHANGED_IN_MEASURED_RANGE))
+def test_A_nb_and_qda_predicted_class_unchanged_in_measured_range(model_key, scaling):
+    """A (測った範囲だけの主張。不変性の主張ではない)。AD-14.4 は NB と QDA (reg_param = 0) を「スケールに左右されない」
+    とは言わない (NB は var_smoothing のため単位で予測クラスも変わりうる。QDA は共分散の固有値が約 1e-4 以下で失敗する)。
+    ここで確かめるのは、Moons (n = 200、noise = 0.3) のシード 0〜19 で、SCALINGS の 3 変換 (各特徴量 ×(1, 400) +(30, 3000)、
+    ×(10, 1000) +(-5, 250)、標準化) を掛けても、400 点の格子での予測クラスが変わらなかったことだけ。確率の差は
+    NB 1e-3 以下 (Moons の ×(1, 400) でシード 20 通りの最大が約 1.2e-4)、QDA 1e-9 以下。これらの倍率より小さい倍率や、別のデータ・別の比は測っていない。"""
+    model_cls, params = SCALE_UNCHANGED_IN_MEASURED_RANGE[model_key]
+
+    def check(seed):
+        raw, scaled, grid, grid_t = fit_raw_and_scaled(model_cls, params, scaling, seed)
+        agreement = float(np.mean(raw.predict(grid) == scaled.predict(grid_t)))
+        diff = np.abs(raw.predict_proba(grid) - scaled.predict_proba(grid_t))
+        tol = NB_PROBA_TOL if params["variant"] == "nb" else LDA_QDA_PROBA_TOL
+        return agreement == 1.0 and diff.max() <= tol, f"agreement {agreement}, proba diff {diff.max():.1e}"
+    assert_exact(f"{model_key} predicted class unchanged in measured range, {scaling}", check)
 
 
 @guarded
