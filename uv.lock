@@ -585,9 +585,11 @@ name = "ml-playground"
 version = "0.1.0"
 source = { virtual = "." }
 dependencies = [
+    { name = "joblib" },
     { name = "matplotlib" },
     { name = "numpy" },
     { name = "optuna" },
+    { name = "pandas" },
     { name = "scikit-learn" },
     { name = "streamlit" },
 ]
@@ -595,19 +597,25 @@ dependencies = [
 [package.dev-dependencies]
 dev = [
     { name = "pytest" },
+    { name = "scipy" },
 ]
 
 [package.metadata]
 requires-dist = [
+    { name = "joblib", specifier = ">=1.6.0" },
     { name = "matplotlib", specifier = ">=3.11.2" },
     { name = "numpy", specifier = ">=2.5.3" },
     { name = "optuna", specifier = ">=5.0.0" },
+    { name = "pandas", specifier = ">=3.0.6" },
     { name = "scikit-learn", specifier = ">=1.9.1" },
     { name = "streamlit", specifier = ">=1.64.0" },
 ]
 
 [package.metadata.requires-dev]
-dev = [{ name = "pytest", specifier = ">=9.1.1" }]
+dev = [
+    { name = "pytest", specifier = ">=9.1.1" },
+    { name = "scipy", specifier = ">=1.18.1" },
+]
 
 [[package]]
 name = "narwhals"

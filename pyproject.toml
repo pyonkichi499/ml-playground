@@ -4,9 +4,11 @@ version = "0.1.0"
 description = "機械学習の分類器とハイパーパラメータ探索（グリッドサーチ / ランダムサーチ / TPE）を視覚的に学べるプレイグラウンド"
 requires-python = ">=3.14"
 dependencies = [
+    "joblib>=1.6.0",
     "matplotlib>=3.11.2",
     "numpy>=2.5.3",
     "optuna>=5.0.0",
+    "pandas>=3.0.6",
     "scikit-learn>=1.9.1",
     "streamlit>=1.64.0",
 ]
@@ -14,6 +16,7 @@ dependencies = [
 [dependency-groups]
 dev = [
     "pytest>=9.1.1",
+    "scipy>=1.18.1",
 ]
 
 [tool.pytest.ini_options]
