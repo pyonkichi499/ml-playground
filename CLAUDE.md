@@ -94,6 +94,7 @@ Python 3.14（uv で管理）。固定しているバージョン: streamlit 1.6
 - 説明は教育的に正しくなければならない。キャプションが何かを主張するなら、テストでそれを確かめる。
 
 ## アーキテクチャの規則（チームの決定、2026-09）
+- 決定の番号: コード・テスト・コメントにある「AD-14.4」「U1」「R-10」のような番号は、設計の決定の番号である。何を決めたか、その根拠、今の規約の場所は [docs/decisions.md](docs/decisions.md) で引ける。規約の正本はこの CLAUDE.md で、docs/decisions.md には規約を書かない（食い違ったら CLAUDE.md とコードが正しい）。決定の番号を新しくコードから参照するときは、docs/decisions.md にその項目を足す（参照の漏れはテストが検出する）。
 - extra_plots の契約: `extra_plots` の要素は `(title, fig)` または `(title, fig, caption)`。受け取る側はすべて `title, fig, *rest` で展開する（caption = `rest[0] if rest else None`）。`title, fig = item` とは決して書かない。
 - 自己完結した推定器: `build()` は単独で完結した推定器を返す。探索は `make_estimator`（中で `build()` を呼ぶ）+ `cross_validate` を直接実行するので、CV では `BaseModel.fit` の上書きが通らない。クランプやソルバーの選択などは、推定器の中に書かなければならない。`fit` の上書きに許されるのは、表示用の状態を足すことと、警告を抑制することだけ。
 - 見た目の意味: ● 訓練、▲ **テストデータ専用**、★ 最良、+ grid-search max (reference)。色の定数は `models/base.py` の共通のものを使い、新しく作らない:
