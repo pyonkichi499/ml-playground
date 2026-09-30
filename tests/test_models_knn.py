@@ -440,15 +440,19 @@ def test_duplicate_note_uses_shared_duplicate_stats(monkeypatch):
     ctx = load_ctx("Moons", n_samples=200)
     model = KNNModel().fit(ctx.X_train, ctx.y_train, {"weights": "distance"})
     (_, fig, caption), = model.extra_plots(ctx)
-    assert fig.axes[0].get_title().endswith("except where identical coordinates carry different labels: 7 points")
-    assert "同じ座標に違うラベルがある訓練点が 7 点" in caption
+    assert fig.axes[0].get_title().endswith("7 training points share their coordinates with a different label")
+    assert "そういう座標にある訓練点が 7 点ある (外れる点の数ではない)" in caption
     plt.close("all")
 
 
-@pytest.mark.parametrize("k", [5, 9])
+@pytest.mark.parametrize("k", [1, 5, 9])
 def test_iris_distance_title_reports_conflicting_duplicates(k):
     """該当する点 (P) があるときだけ注記を出す (AD-14.6 / 14.9 の文言)。誤分類は必ずその P 点の中で起き、
-    数は P − M 以下 (M = そういう座標の数。テストの中で独立に数える検算)。"""
+    M ≤ 誤り ≤ P − M (M = そういう座標の数。テストの中で独立に数える検算)。
+
+    どの k でも成り立つ: 同じ座標の点は同じクエリなので同じ予測になり、食い違うグループごとに 1 点以上外れる
+    (下限)。近傍には距離 0 の点が必ず入るので、予測はグループ内に実在するラベルになり、各グループの誤りは
+    g − 1 以下 (上限)。k=1 は、グループの大きさより小さい k の例として入れている。"""
     from data.generator import duplicate_stats
 
     ctx = _iris_ctx((0, 1))  # がく片の組: 同じ座標でクラスが違う点が多い
@@ -456,20 +460,20 @@ def test_iris_distance_title_reports_conflicting_duplicates(k):
     model = KNNModel().fit(ctx.X_train, ctx.y_train, {"n_neighbors": k, "weights": "distance"})
     (_, fig, caption), = model.extra_plots(ctx)
     title = fig.axes[0].get_title()
-    assert title.endswith(f"except where identical coordinates carry different labels: {n_points} points")
-    assert f"同じ座標に違うラベルがある訓練点が {n_points} 点" in caption and caption.endswith("test の線は参考)。")
+    assert title.startswith("distance weighting: train accuracy is below 1.0 for every k:")
+    assert title.endswith(f"{n_points} training points share their coordinates with a different label")
+    assert f"そういう座標にある訓練点が {n_points} 点ある (外れる点の数ではない)" in caption
+    assert "少なくとも 1 点は必ず外れる" in caption and caption.endswith("test の線は参考)。")
     wrong = model.predict(ctx.X_train) != ctx.y_train
     _, inverse = np.unique(ctx.X_train, axis=0, return_inverse=True)
     inverse = inverse.ravel()
     labels_at = {g: set(ctx.y_train[inverse == g]) for g in set(inverse)}
     in_conflict = np.array([len(labels_at[g]) == 2 for g in inverse])
     n_locations = sum(len(v) == 2 for v in labels_at.values())
-    # 「誤り ≤ P − M」は、k が同じ座標の最大グループの大きさ以上 (グループ全員が近傍に入る) ときだけ保証される
-    max_group = int(np.bincount(inverse).max())
-    assert k >= max_group, f"premise k >= max group size ({max_group}) does not hold"
+    # 「M ≤ 誤り ≤ P − M」は、どの k でも成り立つ (docstring の理由)。k ≥ 最大グループの前提は要らない
     assert n_points == int(in_conflict.sum()) and n_locations > 1
     assert not np.any(wrong & ~in_conflict)  # 誤分類はすべて「同じ座標でクラスが違う点」
-    assert wrong.sum() <= n_points - n_locations
+    assert n_locations <= wrong.sum() <= n_points - n_locations
     plt.close("all")
 
 
@@ -491,3 +495,113 @@ def test_real_data(case):
 def test_standardize_fixes_mixed_units_on_penguins():
     """AD-14 の教材: mm × g の組では、標準化しないと距離が g の軸だけで決まり正解率が落ちる (あり ≥ なし + 0.10)。"""
     check_standardize_helps(KNNModel)
+
+
+# ---- distance 重みの文言、拡大図と一方の軸の注記 ----
+def test_iris_petal_distance_accuracy_is_below_one_and_n_is_not_the_error_count():
+    """食い違う点があれば訓練正解率は必ず 1.0 未満。n (食い違う座標にある点の数) は外れる点の数ではない。
+    Iris 花弁の組 (実データの既定)、seed 0: n = 2、外れるのは 1 点。"""
+    from data.generator import duplicate_stats
+    from model_grid import real_ctx
+
+    ctx = real_ctx("Iris")
+    n_points = duplicate_stats(ctx.X_train, ctx.y_train).conflicting
+    for k in (1, 5, 50):
+        model = KNNModel().fit(ctx.X_train, ctx.y_train, {"n_neighbors": k, "weights": "distance"})
+        errors = int(np.sum(model.predict(ctx.X_train) != ctx.y_train))
+        assert errors >= 1  # 必ず外れる (k によらない)
+    assert (n_points, errors) == (2, 1)
+    (_, fig, caption), = model.extra_plots(ctx)
+    assert "訓練正解率はどの k でも 1.0 未満になる" in caption and "ことがある" not in caption
+    assert "多数派" not in caption
+    plt.close("all")
+
+
+def test_no_conflict_caption_does_not_say_only_itself():
+    """食い違いが無くても同じ座標・同じラベルの点はありうるので「自分自身だけ」とは書かない。"""
+    ctx = load_ctx("Moons", n_samples=200)
+    model = KNNModel().fit(ctx.X_train, ctx.y_train, {"weights": "distance"})
+    (_, _, caption), = model.extra_plots(ctx)
+    assert "距離 0 にある点 (自分と同じ座標の点) だけで決まる" in caption and "自分自身だけ" not in caption
+    assert "その点自身のクラスで決まる" not in model.boundary_description()
+    plt.close("all")
+
+
+def _penguins_scale_ctx():
+    from model_grid import SCALE_CASE, real_ctx
+
+    return real_ctx(*SCALE_CASE)
+
+
+def test_unscaled_penguins_inset_stays_inside_the_axes_and_note_explains_why():
+    """Penguins の くちばしの長さ × 体重、標準化なし、既定の k-NN。近傍の半径が g の軸で決まり、横方向の
+    半軸が mm の軸の幅を越える。拡大図の枠・接続線が図の外に出ないこと (拡大しても意味のない軸なので拡大図は
+    付けない)、そして説明文が「距離はほぼ縦軸の特徴量だけで決まっている」と述べること。"""
+    ctx = _penguins_scale_ctx()
+    model = KNNModel().fit(ctx.X_train, ctx.y_train, {}, standardize=False)
+    fig = model.plot_decision_boundary(ctx.X_train, ctx.y_train, ctx.X_test, ctx.y_test, resolution=60,
+                                       bounds=ctx.bounds, feature_labels=ctx.feature_labels)
+    ax = fig.axes[0]
+    x0, x1 = ax.get_xlim()
+    y0, y1 = ax.get_ylim()
+    assert ax.child_axes == []  # 拡大図なし (横軸は近傍の範囲より狭い)
+    # 主図の楕円は、半軸が横軸の幅を越えるので軸の外まで伸びる。軸の枠で切られている (clip) ことを確かめる
+    ellipses = [p for p in ax.patches if isinstance(p, Ellipse)]
+    assert len(ellipses) == 1
+    cx, half = ellipses[0].center[0], ellipses[0].width / 2
+    assert cx - half < x0 or cx + half > x1  # 切らなければ図の外へはみ出す設定であること
+    assert ellipses[0].get_clip_on() and ellipses[0].get_clip_box() is not None
+    for line in ax.lines:  # 近傍への細線は、両端とも主図の範囲の内側 (訓練点どうしを結ぶだけなので外へ出ない)
+        xs, ys = (np.asarray(v) for v in line.get_data())
+        assert np.all((xs >= x0) & (xs <= x1)) and np.all((ys >= y0) & (ys <= y1))
+    assert model.one_axis_dominance() == 1
+    text = model.boundary_description()
+    assert "距離はほぼ縦軸の特徴量だけで決まっていて、横軸の値は近傍の選び方にほとんど効いていない" in text
+    assert "「特徴量を標準化する」で直る" in text
+    plt.close("all")
+
+
+def test_zoom_window_is_clipped_to_the_main_axes():
+    """拡大図の窓 (q ± 1.6 × 半軸) が主図の外へ出るときは、主図の範囲との共通部分に切り詰める。
+    Iris の既定の組・標準化あり・k=1 は、拡大図が付き、窓が主図の右端に接する (切り詰めが効く) 設定。"""
+    from model_grid import real_ctx
+
+    ctx = real_ctx("Iris")
+    model = KNNModel().fit(ctx.X_train, ctx.y_train, {"n_neighbors": 1}, standardize=True)
+    fig = model.plot_decision_boundary(ctx.X_train, ctx.y_train, ctx.X_test, ctx.y_test, resolution=60,
+                                       bounds=ctx.bounds, feature_labels=ctx.feature_labels)
+    ax = fig.axes[0]
+    (ins,) = ax.child_axes
+    (x0, x1), (y0, y1) = ax.get_xlim(), ax.get_ylim()
+    (ix0, ix1), (iy0, iy1) = ins.get_xlim(), ins.get_ylim()
+    assert x0 <= ix0 < ix1 <= x1 and y0 <= iy0 < iy1 <= y1  # 内側
+    assert ix1 == x1  # 右端で切り詰められている (切り詰めなしなら x1 を越える)
+    q = model._pick_query(ctx)
+    dist, _ = model._knn.kneighbors(model._to_model_space(q[None, :]))
+    assert q[0] + 1.6 * float(dist[0, -1]) * model._sigma[0] > x1
+    plt.close("all")
+
+
+def test_one_axis_note_only_when_one_axis_is_narrower_than_the_neighbourhood():
+    """一方の軸の説明文は条件付き: 標準化すると出ない。Moons (単位がそろっている) でも出ない。
+    k が訓練点の数の半分以上のときは、近傍が大部分を占めて軸の話ではないので出ない。"""
+    ctx = _penguins_scale_ctx()
+    std = KNNModel().fit(ctx.X_train, ctx.y_train, {}, standardize=True)
+    assert std.one_axis_dominance() is None and "縦軸の特徴量だけ" not in std.boundary_description()
+    moons = load_ctx("Moons", n_samples=200)
+    for k in (5, 50):
+        m = KNNModel().fit(moons.X_train, moons.y_train, {"n_neighbors": k})
+        assert m.one_axis_dominance() is None, k
+    # k が訓練点の数の半分以上 (2k >= n) なら、近傍が訓練データの大部分を占めるので出ない。
+    # 単位のそろった Moons (訓練 25 点、標準化なし) でも、k=20, 25 では縦軸の幅だけを越えて注記が出てしまっていた
+    small = load_ctx("Moons", n_samples=50, test_size=0.5)
+    assert len(small.X_train) == 25
+    for k in (10, 12):
+        assert KNNModel().fit(small.X_train, small.y_train, {"n_neighbors": k}).one_axis_dominance() is None, k
+    for k in (20, 25):
+        m = KNNModel().fit(small.X_train, small.y_train, {"n_neighbors": k})
+        assert m.one_axis_dominance() is None and "特徴量だけで決まっていて" not in m.boundary_description(), k
+    # 混在した単位 (Penguins mm × g、標準化なし、訓練 153 点) では、半分未満なら g の軸 (1) を返し、半分以上で None
+    for k, expected in ((5, 1), (25, 1), (50, 1), (76, 1), (77, None), (153, None)):
+        m = KNNModel().fit(ctx.X_train, ctx.y_train, {"n_neighbors": k}, standardize=False)
+        assert len(ctx.X_train) == 153 and m.one_axis_dominance() == expected, k

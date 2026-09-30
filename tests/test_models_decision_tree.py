@@ -93,3 +93,121 @@ def test_class_labels_in_figures():
     synthetic = class_label_texts(DecisionTreeModel, "Moons", {"max_depth": 2})
     assert any("class = class 1" in t for t in synthetic), synthetic
     assert not any("class 1 (" in t or "class 0 (" in t for t in synthetic)
+
+
+# ---- 境界は軸に平行な階段、訓練正解率は深さで減らない、葉の点数 ----
+def _predict_cells(tree_model, ctx, predict=None):
+    """木のしきい値で平面を長方形のセルに分け、predict (既定は木自身) が (セルの中で一定か, 隣のセルで変わる所があるか) を返す。"""
+    predict = predict or tree_model.predict
+    tree = tree_model.final_estimator.tree_
+    xs = np.unique(tree.threshold[tree.feature == 0])
+    ys = np.unique(tree.threshold[tree.feature == 1])
+    b = ctx.bounds
+    xe = np.concatenate([[b.x_min - 1], xs, [b.x_max + 1]])
+    ye = np.concatenate([[b.y_min - 1], ys, [b.y_max + 1]])
+    rng = np.random.default_rng(0)
+    grid = np.empty((len(xe) - 1, len(ye) - 1), dtype=int)
+    constant = True
+    for i in range(len(xe) - 1):
+        for j in range(len(ye) - 1):
+            # しきい値ちょうどは「<=」の側なので、内側の点だけを取る (辺から 1e-6 幅離す)
+            lo_x, hi_x = xe[i] + 1e-6 * (xe[i + 1] - xe[i]), xe[i + 1] - 1e-6 * (xe[i + 1] - xe[i])
+            lo_y, hi_y = ye[j] + 1e-6 * (ye[j + 1] - ye[j]), ye[j + 1] - 1e-6 * (ye[j + 1] - ye[j])
+            pts = np.c_[rng.uniform(lo_x, hi_x, 5), rng.uniform(lo_y, hi_y, 5)]
+            centre = np.array([[(xe[i] + xe[i + 1]) / 2, (ye[j] + ye[j + 1]) / 2]])
+            pred = predict(np.vstack([pts, centre]))
+            constant &= bool(np.all(pred == pred[-1]))
+            grid[i, j] = pred[-1]
+    changes = bool(np.any(grid[1:, :] != grid[:-1, :]) or np.any(grid[:, 1:] != grid[:, :-1]))
+    return constant, changes
+
+
+@pytest.mark.parametrize("dataset,depth", [("Moons", 3), ("Moons", 8), ("Palmer Penguins", 3), ("Palmer Penguins", 8)])
+def test_boundary_is_axis_parallel_steps(dataset, depth):
+    """捕まえるもの: build() に回転を含む前処理 (PCA など) が入ること、図の背景が木そのものでなくなること。
+
+    木のしきい値で平面を長方形のセルに分け、各セルの中の点の予測がセルの中心と一致すること (= 境界は軸に平行)、
+    セルの境目で予測が変わる所が実在すること (階段が実在する)。斜めの境界の LogReg (次数 1) では同じ確認が落ちる。"""
+    from model_grid import real_ctx
+
+    ctx = real_ctx(dataset) if dataset != "Moons" else load_ctx("Moons", n_samples=200)
+    model = DecisionTreeModel().fit(ctx.X_train, ctx.y_train, {"max_depth": depth})
+    constant, changes = _predict_cells(model, ctx)
+    assert constant and changes
+
+
+def test_slanted_boundary_fails_the_cell_check():
+    """対照: 次数 1 の LogReg (斜めの直線の境界) を、同じセルの確認に当てると、セルの中で予測が一定でなくなる。"""
+    from models.logistic_regression import LogisticRegressionModel
+
+    ctx = load_ctx("Linear Separable", n_samples=300)
+    tree = DecisionTreeModel().fit(ctx.X_train, ctx.y_train, {"max_depth": 6})
+    slanted = LogisticRegressionModel().fit(ctx.X_train, ctx.y_train, {"degree": 1})
+    tree_ok, _ = _predict_cells(tree, ctx)
+    # 木のしきい値のセルの中を LogReg の斜めの境界が通り、同じセルの中で予測が割れる
+    slanted_ok, _ = _predict_cells(tree, ctx, predict=slanted.predict)
+    assert tree_ok and not slanted_ok
+
+
+def _truncated_accuracy(model, X, y, depth, pick):
+    """1 本の木を深さ depth で打ち切り、各ノードのクラス = pick(value) で予測したときの訓練正解率。"""
+    tree = model.final_estimator.tree_
+    node = np.zeros(len(X), dtype=int)
+    for _ in range(depth):
+        internal = tree.children_left[node] != -1
+        go_left = X[np.arange(len(X)), np.maximum(tree.feature[node], 0)] <= tree.threshold[node]
+        node = np.where(internal, np.where(go_left, tree.children_left[node], tree.children_right[node]), node)
+    cls = pick(tree.value[node][:, 0, :], axis=1)
+    return float(np.mean(model.final_estimator.classes_[cls] == y))
+
+
+def test_cutting_one_tree_at_a_shallower_depth_never_raises_accuracy():
+    """1 本の深い木を深さ d で打ち切って予測すると、訓練正解率は d に対して減らない。必ず成り立つ性質:
+    分割は、子の多数派の数の和 ≥ 親の多数派の数 だから (自前の打ち切りの計算で確かめる)。
+
+    対照: 各ノードのクラスに多数派ではなく少数派 (argmin) を使うと、正しい版と 1 か所だけ違うが、同じ確認が落ちる
+    (深いほど葉が純粋になり、少数派が減るため。テストが落ちうることの確認)。"""
+    ctx = load_ctx("Moons", n_samples=300)
+    model = DecisionTreeModel().fit(ctx.X_train, ctx.y_train, {"max_depth": 15})
+    depths = range(0, model.final_estimator.get_depth() + 1)
+    good = [_truncated_accuracy(model, ctx.X_train, ctx.y_train, d, np.argmax) for d in depths]
+    assert all(b >= a - 1e-12 for a, b in zip(good, good[1:]))
+    bad = [_truncated_accuracy(model, ctx.X_train, ctx.y_train, d, np.argmin) for d in depths]
+    assert any(b < a - 1e-12 for a, b in zip(bad, bad[1:]))
+    # 最深で打ち切らなければ、モデルの予測と一致する (自前の計算が木そのものと同じであることの確認)
+    full = _truncated_accuracy(model, ctx.X_train, ctx.y_train, model.final_estimator.get_depth(), np.argmax)
+    assert full == pytest.approx(float(np.mean(model.predict(ctx.X_train) == ctx.y_train)))
+
+
+@pytest.mark.parametrize("dataset", ["Moons", "Iris sepal"])
+def test_separate_fits_training_accuracy_does_not_decrease_with_depth(dataset):
+    """深さを変えて別々に fit したとき、訓練正解率が深さで減らない (help「深いほど…訓練データにぴったり合う」)。
+
+    保証ではなく実測: 別々に fit した木は、浅い木の切り詰めとは限らない (同じ良さの分割がいくつもあるとき、選ばれる
+    分割が変わる。70 通り × 深さの隣どうしの比較 14 回 = 980 回のうち 93 回で、切り詰めの性質が成り立たなかった。
+    31/70 通りで 1 回以上)。それでも、訓練正解率が減った例は同じ 980 回の比較で 0 件だった (runs.log 2026-09-29
+    17:40:17)。ここでは既定の実行のために、Moons と Iris がく片の各 1 seed、深さ 1〜15 に絞る。
+    70 通りの全体は tests/scale にある。"""
+    from model_grid import real_ctx
+
+    ctx = load_ctx("Moons", n_samples=300) if dataset == "Moons" else real_ctx("Iris", ("sepal_length", "sepal_width"))
+    accs = [float(np.mean(DecisionTreeModel().fit(ctx.X_train, ctx.y_train, {"max_depth": d}).predict(ctx.X_train)
+                          == ctx.y_train)) for d in range(1, 16)]
+    assert all(b >= a - 1e-12 for a, b in zip(accs, accs[1:])), accs
+
+
+@pytest.mark.parametrize("dataset", ["Moons", "Iris sepal"])
+def test_min_samples_leaf_reaches_the_estimator_and_bounds_every_leaf(dataset):
+    """捕まえるもの: UI の値が build() で推定器に渡らない漏れ。UI と同じ経路 (model.fit) で m = 1 / 5 / 20 を与え、
+    すべての葉の点数が m 以上であること。m = 20 では葉の数が m = 1 より少なく、最小の葉の点数が m = 1 より大きい。"""
+    from model_grid import real_ctx
+
+    ctx = load_ctx("Moons", n_samples=300) if dataset == "Moons" else real_ctx("Iris", ("sepal_length", "sepal_width"))
+    stats = {}
+    for m in (1, 5, 20):
+        est = DecisionTreeModel().fit(ctx.X_train, ctx.y_train, {"max_depth": 15, "min_samples_leaf": m}).final_estimator
+        t = est.tree_
+        leaf_sizes = t.n_node_samples[t.children_left == -1]
+        assert leaf_sizes.min() >= m, (m, leaf_sizes.min())
+        stats[m] = (len(leaf_sizes), int(leaf_sizes.min()))
+    assert stats[20][0] < stats[1][0] and stats[20][1] > stats[1][1]

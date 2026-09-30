@@ -28,7 +28,7 @@ from models.base import PlotContext
 from models.gaussian import GaussianModel
 from models.gradient_boosting import GradientBoostingModel
 from models.knn import KNNModel
-from models.logistic_regression import ZERO_TOL, LogisticRegressionModel
+from models.logistic_regression import LogisticRegressionModel
 from models.mlp import MLPModel
 from models.random_forest import RandomForestModel
 from models.base import make_estimator
@@ -44,6 +44,8 @@ N_GRID = 400
 # MLP で logit を取るときに使う確率の範囲と、その範囲に入った格子点の数の下限
 PROBA_MARGIN = 1e-6
 MIN_GRID_POINTS = 100
+# L2 では係数が 0 の近くにも来ないことを見る閾値。検証の対象 (logistic_regression.py) の定義には頼らず、ここで持つ
+L2_NEAR_ZERO = 1e-8
 
 
 def load(dataset: str = "Moons", n_samples: int = 200, noise: float = 0.3, test_size: float = 0.3):
@@ -149,7 +151,7 @@ def test_logreg_l1_zeros_coefficients_l2_does_not(moons):
         l2 = LogisticRegressionModel().fit(X_train, y_train, {"degree": 5, "C": C, "penalty": "l2"})
         n_zero = int(np.sum(l1._coef == 0.0))  # 「ちょうど 0」なので許容誤差なしで数える
         assert 0 < n_zero < l1._coef.size, (C, n_zero)
-        assert np.sum(np.abs(l2._coef) <= ZERO_TOL) == 0, C
+        assert np.sum(np.abs(l2._coef) <= L2_NEAR_ZERO) == 0, C
 
 
 def test_logreg_smaller_C_shrinks_coefficients_l2(moons):
@@ -229,6 +231,50 @@ def test_gaussian_qda_reg_param_one_gives_unit_circles(moons):
         np.testing.assert_allclose(cov, np.eye(2), atol=1e-12)
 
 
+def eigen_ratios(model: GaussianModel) -> list[float]:
+    """各クラスの共分散の固有値の比 (最大 / 最小) = 楕円の細長さ。"""
+    ratios = []
+    for _, cov in model.class_gaussians():
+        eigvals = np.linalg.eigvalsh(cov)
+        ratios.append(float(eigvals[-1] / eigvals[0]))
+    return ratios
+
+
+REG_PARAM_GRID = (0.0, 0.05, 0.2, 0.5, 0.9, 1.0)
+
+
+@pytest.mark.parametrize("config", [DataConfig("Moons", 200, 0.3, 0, 0.3), DataConfig("Palmer Penguins", None, None, 0, 0.3)],
+                         ids=["moons", "penguins"])
+def test_gaussian_qda_reg_param_shrinks_eigenvalue_ratio(config):
+    """gaussian.py reg_param の help:「各クラスの楕円を円 (単位行列) に近づける。点が少ないときの極端に細長い楕円を
+    防ぐ」— 各クラスの共分散の固有値の比 (細長さ) は、reg_param を上げると狭義に減り、1 で 1 になる。
+
+    理由 (決定的): 正則化後の共分散は (1 − r)Σ + rI なので、固有値は (1 − r)λ + r。比
+    f(r) = ((1 − r)λmax + r) / ((1 − r)λmin + r) の導関数は (λmin − λmax) / D² < 0 (λmax > λmin のとき)。
+    単位にも seed にも依らない。
+    """
+    X_train, _, y_train, _ = config.load()
+    rows = [eigen_ratios(GaussianModel().fit(X_train, y_train, {"variant": "qda", "reg_param": r}))
+            for r in REG_PARAM_GRID]
+    per_class = np.array(rows).T  # (クラス, reg_param)
+    assert np.all(np.diff(per_class, axis=1) < 0), per_class
+    np.testing.assert_allclose(per_class[:, -1], 1.0, atol=1e-12)
+
+
+def test_gaussian_qda_small_reg_param_prevents_extremely_thin_ellipses():
+    """gaussian.py reg_param の help:「点が少ないときの極端に細長い楕円を防ぐ」— 片方の軸に
+    ほとんど幅が無い (極端に細長い) データでは、reg_param = 0.05 だけで固有値の比が 10 倍以上小さくなる
+    (実測: 各クラス 6500 前後 → 150〜195)。"""
+    rng = np.random.default_rng(0)
+    X = np.r_[rng.normal(0, 1, (30, 2)) * [3, 0.05], rng.normal(2, 1, (30, 2)) * [0.05, 3]]
+    y = np.r_[np.zeros(30, dtype=int), np.ones(30, dtype=int)]
+    thin = eigen_ratios(GaussianModel().fit(X, y, {"variant": "qda", "reg_param": 0.0}))
+    regularized = eigen_ratios(GaussianModel().fit(X, y, {"variant": "qda", "reg_param": 0.05}))
+    assert min(thin) > 1000, thin  # 前提: 極端に細長い
+    for before, after in zip(thin, regularized):
+        assert after * 10 <= before, (before, after)
+
+
 # ================================================================ ランダムフォレスト
 def test_rf_one_tree_without_randomness_is_a_decision_tree(moons):
     """random_forest.py max_features の選択肢「2 (全部 = ただのバギング)」と bootstrap の help — 木 1 本・
@@ -242,20 +288,53 @@ def test_rf_one_tree_without_randomness_is_a_decision_tree(moons):
     np.testing.assert_allclose(rf.predict_proba(grid), dt.predict_proba(grid)[:, 1])
 
 
-def test_rf_no_bootstrap_all_features_trees_nearly_identical(moons):
-    """random_forest.py caption:「bootstrap なし・特徴量 2 つでは全ての木がほぼ同じになり、平均の効果が消えます」。
-    対照: 既定 (bootstrap あり・max_features=1) では木どうしがはっきり違う。"""
-    X_train, _, y_train, _, grid = moons
+RF_N_TREES = 10
+# 補助の判定 (格子の上で 1 本目の木と予測が一致する割合の平均)。以前は Moons seed 0 の 1 回の実測で 0.95 と決めていたが、
+# 3 データ × seed 10 の 30 通りでは最小 0.922 だった (境界に乗っていた)。30 通りの最小から決めて 0.90
+RF_SAME_TREES_MIN_AGREEMENT = 0.90
 
-    def mean_agreement_with_first_tree(params):
-        rf = RandomForestModel().fit(X_train, y_train, {"n_estimators": 10, **params})
-        preds = np.stack([t.predict(grid) for t in rf.estimator.estimators_])
-        return float(np.mean(preds[1:] == preds[0]))
 
-    same = mean_agreement_with_first_tree({"bootstrap": False, "max_features": 2})
-    varied = mean_agreement_with_first_tree({"bootstrap": True, "max_features": 1})
-    assert same >= 0.95, same
-    assert varied < same - 0.03, (varied, same)
+def root_splits(rf: RandomForestModel) -> set[tuple[int, float]]:
+    """各木の根の分割 (特徴量の番号, 閾値) の集合。"""
+    return {(int(t.tree_.feature[0]), float(t.tree_.threshold[0])) for t in rf.estimator.estimators_}
+
+
+def fit_forest(data, bootstrap: bool, max_features: int) -> RandomForestModel:
+    X_train, _, y_train, _, _ = data
+    return RandomForestModel().fit(X_train, y_train, {"n_estimators": RF_N_TREES, "bootstrap": bootstrap,
+                                                      "max_features": max_features, "max_depth": None})
+
+
+def test_rf_without_bootstrap_max_features_decides_whether_trees_are_identical(moons):
+    """random_forest.py caption:「bootstrap なし・特徴量 2 つでは全ての木がほぼ同じになり、平均の効果が消えます」の
+    max_features の側 (bootstrap は「なし」に固定し、max_features だけを変えて、その効果だけを分けて見る)。
+
+    - max_features=2: どの木も同じデータの同じ候補 (2 特徴量の全分割) から最良の分割を選ぶので、根の分割は全木で
+      1 通り (違いが出るのは利得がちょうど同点のときの並びだけ)。3 データ × seed 10 の 30 通りで 30/30。
+    - max_features=1: 根で使える特徴量が木ごとにランダムに 1 つに決まるので、根は 2 通り以上 (30 通りでいつも 2)。
+      random_state を固定しているのでテストは決定的だが、「10 本すべてが同じ特徴量を引く」確率は 0 ではない
+      (約 2 × 2⁻¹⁰。木を増やすほど小さい)。
+    - 補助: max_features=2 の木どうしは、格子の上でもほぼ同じ予測をする (RF_SAME_TREES_MIN_AGREEMENT)。
+    """
+    grid = moons[4]
+    same = fit_forest(moons, bootstrap=False, max_features=2)
+    varied = fit_forest(moons, bootstrap=False, max_features=1)
+    assert len(root_splits(same)) == 1, root_splits(same)
+    assert len(root_splits(varied)) >= 2, root_splits(varied)
+    preds = np.stack([t.predict(grid) for t in same.estimator.estimators_])
+    agreement = float(np.mean(preds[1:] == preds[0]))
+    assert agreement >= RF_SAME_TREES_MIN_AGREEMENT, agreement
+
+
+def test_rf_with_all_features_bootstrap_decides_whether_trees_are_identical(moons):
+    """random_forest.py caption:「bootstrap なし・特徴量 2 つでは全ての木がほぼ同じになり、平均の効果が消えます」の
+    bootstrap の側 (max_features は 2 に固定し、bootstrap だけを変えて、その効果だけを分けて見る)。
+
+    - bootstrap なし: どの木も同じデータを見るので、根の分割は全木で 1 通り。
+    - bootstrap あり: 木ごとに復元抽出したデータが違うので、根の閾値がばらけて 2 通り以上 (30 通りで 3〜10 通り)。
+    """
+    assert len(root_splits(fit_forest(moons, bootstrap=False, max_features=2))) == 1
+    assert len(root_splits(fit_forest(moons, bootstrap=True, max_features=2))) >= 2
 
 
 def test_rf_forest_is_average_of_trees(moons):
@@ -359,18 +438,31 @@ def test_mlp_large_alpha_shrinks_weights(moons):
     assert weight_norm(10.0) < weight_norm(1e-4)
 
 
+# ================================================================ SVM
+@pytest.mark.parametrize("dataset", ["Moons", "Linear Separable"])
+def test_svm_kernel_draws_curved_boundaries(dataset):
+    """svm.py summary:「カーネルを使うと曲線の境界も引ける」— linear カーネルの決定関数は
+    アフィン (境界は直線)、rbf・poly カーネルはアフィンではない (曲線)。ロジスティック回帰の degree の主張と同じ形で確かめる
+    (実測の相対残差: linear 約 3e-15、rbf 0.98〜1.06、poly 0.64〜0.75)。"""
+    X_train, _, y_train, _, grid = load(dataset)
+    for kernel, linear in (("linear", True), ("rbf", False), ("poly", False)):
+        f = SVMModel().fit(X_train, y_train, {"kernel": kernel}).estimator.decision_function(grid)
+        residual = fit_residual(f, grid, 1)
+        assert (residual < EXACT_TOL) if linear else (residual > NONLINEAR), (kernel, residual)
+
+
 # ================================================================ スケーリングへの不変性 (AD-14.4)
-# 出典: architecture.md AD-14.4 (2026-09-26 修正)「木と Gaussian の NB / LDA / QDA (reg_param = 0) は、現実的な単位の
-# 範囲で特徴量ごとのスケーリングに不変 (木は完全一致、LDA/QDA は約 1e-15)。極端な比 (≳1e5) では、
-# NB の var_smoothing (最大分散に比例)、QDA のランク判定 (→ FitError)、sklearn の最小分割差によって崩れる」
-# NB の数値は Decision log の訂正 (AD-17 multiseed の反例) に従う:「NB の予測クラスは単位の変更で変わらない。確率には
-# var_smoothing (1e-9 × 全特徴量の最大分散を分散に足す) による小さな差が残り、Penguins の ×400 の比でシード 20 通りの
-# 最大は約 1.2e-4」。原因が var_smoothing であることはレビューで実測して確認した (var_smoothing=0 で差は 1.95e-14 まで消える)。
+# 出典: docs/decisions.md AD-14.4 (訂正後)「特徴量ごとの拡大縮小で結果が変わらない (数値の誤差の範囲) と言えるのは決定木と
+# LDA だけ。Naive Bayes は var_smoothing のため、予測クラスも単位で変わりうる。QDA (reg_param = 0) は絶対値で決まり、
+# クラス内の共分散の固有値が約 1e-4 以下で LinAlgError (アプリでは FitError) になる」。
+# 以前の「NB / QDA も現実的な単位の範囲で不変」「極端な比 (≳1e5) で崩れる」は言い過ぎだったので、このテストは
+# NB と QDA について、測った倍率・データ・シードの範囲の一致だけを確かめ、不変とは言わない (下のテストの docstring)。
+# NB の差の原因が var_smoothing であることはレビューで実測して確認した (var_smoothing=0 で差は 1.95e-14 まで消える)。
 # 「reg_param > 0 の QDA はスケーリングに不変ではない」、knn.py / svm.py の scale_sensitive = True。
 #
 # 不変性は standardize フラグでは確かめられない (木や Gaussian には効かないので自明に通る)。
 # 代わりに、X を自分で変換したデータで fit し、元のデータで fit したものと「変換した格子の上」で比べる。
-# 変換は現実的な単位の範囲に限る (極端な比は主張の範囲外なので入れない)。
+# 変換は下の 3 通りだけ (測った範囲。それ以外の倍率は確かめていないので、不変とは言わない)。
 
 SCALINGS = {
     # Penguins の実際の比 (くちばし mm と体重 g: 標準偏差の比 約 400) を模した、正の倍率 + 平行移動
@@ -391,10 +483,15 @@ SCALE_SENSITIVE = {"knn": (KNNModel, {}), "svm": (SVMModel, {})}
 # 木: 格子点がちょうど閾値に乗ると浮動小数点の丸めで揺れうるので、一致率で見る
 TREE_MIN_AGREEMENT = 0.999
 TREE_PROBA_TOL = 1e-12
-LDA_QDA_PROBA_TOL = 1e-9  # 実測 約 1e-15
-# NB: 主な判定は「予測クラスが全点で一致」。確率の差は補助で、var_smoothing (1e-9 × 全特徴量の最大分散を各分散に
-# 足す) のため単位を変えると小さな差が残る。seed 0 だけの実測 (約 1e-5) で 1e-4 と決めたら境界に乗っていた。
-# 実測 (tests/scale の multiseed の実行): ×1:×400 でシード 20 通りの最大 1.2e-4 → 約 8 倍の余裕で 1e-3
+LDA_QDA_PROBA_TOL = 1e-9  # 実測 約 1e-15 (固定データ)、シード 20 通りの最大でも 2e-14
+# NB: 判定は「測った倍率で予測クラスが全点で一致」まで。NB は単位で変わりうる (AD-14.4: var_smoothing = 1e-9 × 全特徴量の
+# 最大分散を各分散に足すため。影響は分散の比に比例する) ので、不変とは言わず、下の 3 通りの変換・Moons (n=200、noise=0.3)・
+# 格子 400 点で予測クラスが一致した、という測った範囲だけを確かめる。確率の差 (NB_PROBA_TOL) は補助で、範囲外の倍率
+# (例: Penguins の「くちばしの長さ × 体重」で ×100 や ×0.0025) では予測クラスも変わる (AD-14.4 の測定)。
+# 数え直し (2026-09-30、Moons、シード 0〜19 の 20 通り、下の 3 通りの変換、確率の差の最大):
+#   penguins_ratio (×1:×400 + 平行移動) 1.16e-4 / unit_change (×10:×1000 + 平行移動) 7.2e-6 / standardize 4.0e-9。
+#   このテストの固定データ (シード 0) では、それぞれ 8.7e-5 / 5.4e-6 / 1.9e-9。予測クラスは 20 通り × 3 変換で全点一致。
+# seed 0 だけの実測で 1e-4 と決めると 20 通りのうち一部が境界を超える。許容 1e-3 は、最大 1.16e-4 の約 8 倍
 NB_PROBA_TOL = 1e-3
 # 「変わる」側の判定: 予測クラスの一致率がこれ未満 (実測: KNN 0.77〜0.95、SVM 0.57〜0.96)
 CHANGED_MAX_AGREEMENT = 0.99
@@ -421,18 +518,22 @@ def fit_raw_and_scaled(model_cls, params, name, data, standardize=False):
 
 @pytest.mark.parametrize("name", list(SCALINGS))
 @pytest.mark.parametrize("model_key", list(SCALE_INVARIANT))
-def test_trees_and_gaussian_are_scale_invariant(moons, model_key, name):
-    """AD-14.4 (修正後):「木と Gaussian の NB / LDA / QDA (reg_param = 0) は、現実的な単位の範囲で特徴量ごとの
-    スケーリングに不変」。正の倍率 + 平行移動 (Penguins 相当の比 ×1 : ×400 を含む) と標準化で確かめる。
-    Gaussian は予測クラスの一致 (= 1.0) を主に、確率の差を補助に見る (NB の数値は Decision log の訂正に従う)。
-    極端な比 (≳1e5) では NB の var_smoothing・QDA のランク判定・木の最小分割差で崩れる (主張の範囲外なのでテストしない)。"""
+def test_predictions_keep_under_measured_rescalings(moons, model_key, name):
+    """AD-14.4 (訂正後):「特徴量ごとの拡大縮小で結果が変わらない (数値の誤差の範囲) と言えるのは決定木と LDA だけ。
+    NB は var_smoothing のため単位で予測クラスも変わりうる。QDA (reg_param = 0) は絶対値で決まり、固有値が約 1e-4 以下で失敗する」。
+    このテストは、その主張のうち「測った範囲」だけを確かめる。Moons (n=200、noise=0.3、シード 0)・格子 400 点・3 通りの変換
+    (下の SCALINGS: ×1:×400 + 平行移動、×10:×1000 + 平行移動、標準化) で、元のデータの予測と変換後の予測が一致する。
+      - 決定木 (と RF / 勾配ブースティング)・LDA: 拡大縮小で不変 (木は完全一致、LDA は確率の差 約 1e-15)。
+      - NB・QDA (reg_param = 0): 上の条件の範囲でだけ予測クラスが一致する。NB の確率の差は最大 8.7e-5 (この固定データ)、
+        シード 20 通りで 1.2e-4 弱。QDA は約 1e-14 以下。これ以外の倍率・データ・シードでは言えず、範囲外の倍率では
+        NB の予測クラスが変わり、QDA は失敗しうる (テストしない)。"""
     model_cls, params = SCALE_INVARIANT[model_key]
     raw, scaled, grid, grid_t = fit_raw_and_scaled(model_cls, params, name, moons)
     assert not model_cls.scale_sensitive
     agreement = float(np.mean(raw.predict(grid) == scaled.predict(grid_t)))
     diff = np.abs(raw.predict_proba(grid) - scaled.predict_proba(grid_t))
     if model_cls is GaussianModel:
-        # 主な主張: 境界 (予測クラス) は単位で変わらない。確率の差は補助
+        # 主な判定: 測った倍率で予測クラスが一致する。確率の差は補助
         assert agreement == 1.0, (model_key, name, agreement)
         tol = NB_PROBA_TOL if params["variant"] == "nb" else LDA_QDA_PROBA_TOL
         assert diff.max() <= tol, (model_key, name, diff.max())
@@ -477,16 +578,21 @@ def test_make_estimator_standardize_restores_scale_invariance(moons, model_key, 
 
 # ================================================================ 同じ座標の点と distance 重みの k-NN (AD-14.9)
 # 出典: knn.py weights の help「訓練正解率は 1 になる (ただし、同じ座標に違うラベルの点がある場合を除く)」、
-# k 曲線のタイトル "distance weighting: train accuracy is 1.0 for every k, except where identical coordinates
-# carry different labels: {n} points"、キャプション「同じ座標に違うラベルがある訓練点が {n} 点あり」。
+# k 曲線のタイトル (n > 0) "distance weighting: train accuracy is below 1.0 for every k:" + "{n} training points share
+# their coordinates with a different label"、キャプション (n > 0)「同じ座標の点はどれも同じ予測になるので、そこにラベルの
+# 違う点が混ざっていると、少なくとも 1 点は必ず外れる。このデータでは、そういう座標にある訓練点が {n} 点ある
+# (外れる点の数ではない)」(以前は「1.0 にならないことがある」だったが、同じ座標の点は k によらず同じ予測になるので
+# 「必ず 1.0 未満」に改めた)。
 # n の唯一の元は data.generator.duplicate_stats(X_train, y_train).conflicting。
 # テストでは P (違うラベルと同じ座標にある訓練点の数) と M (そのような座標の数) をアプリのコードとは独立に数える。
 
-EXCEPT_NOTE = "except where identical coordinates carry different labels"
+BELOW_ONE_TITLE = "train accuracy is below 1.0 for every k"
+ALWAYS_WRONG_CAPTION = "少なくとも 1 点は必ず外れる"
 
 
 def count_conflicts(X: np.ndarray, y: np.ndarray):
-    """(P, M, 最大のグループの大きさ, 各点が違うラベルと同じ座標にあるか, k≥最大グループのときの誤り数の期待値)。
+    """(P, M, 最大のグループの大きさ, 各点が違うラベルと同じ座標にあるか, k≥最大グループのときの誤り数の期待値,
+    座標ごとのグループ (点の番号のリスト) の一覧)。
 
     期待値は sklearn の規則から導く: distance 重みで距離 0 の点があれば、その点どうしだけで投票し、同票は class 0。
     """
@@ -505,7 +611,7 @@ def count_conflicts(X: np.ndarray, y: np.ndarray):
             in_conflict[idx] = True
             expected_errors += n0 if n1 > n0 else n1  # 多数派 (同票は class 0) 以外が誤り
     max_group = max(len(idx) for idx in groups.values())
-    return P, M, max_group, in_conflict, expected_errors
+    return P, M, max_group, in_conflict, expected_errors, list(groups.values())
 
 
 DUPLICATE_CASES = {
@@ -524,16 +630,21 @@ def test_knn_distance_train_accuracy_with_identical_coordinates(case):
     """knn.py weights の help「訓練正解率は 1 になる (ただし、同じ座標に違うラベルの点がある場合を除く)」と
     k 曲線のタイトル・キャプション (AD-14.9)。
 
+    どの k でも成り立つこと:
+    - 同じ座標の訓練点はクエリが同じなので、近傍も票も同じになり、必ず同じ予測になる。
     - 誤分類は必ず「違うラベルと同じ座標にある P 点」の中で起きる (それ以外の訓練点は、距離 0 の自分自身で決まる)。
-    - k ≥ 最大のグループの大きさのときは、各座標で多数派 (同票は class 0) が当たるので、誤り数は sklearn の規則から
-      導いた期待値と一致し、M ≤ 誤り数 ≤ P − M (各座標で少なくとも 1 点は外れ、少なくとも 1 点は当たる)。
-      k がそれより小さいと、同じ距離 0 の点のどれが近傍に入るかが並び順で決まり、多数派の点も外れうるので、
-      この不等式は k ≥ 最大グループのときだけ確かめる。
+    - M ≤ 誤り数 ≤ P − M。下限: 違うラベルが混ざる座標では全点が同じ予測なので、少なくとも 1 点は外れる。
+      上限: 近傍には距離 0 の点 (自分自身か同じ座標の点) が必ず入るので、予測はその座標に実在するラベルになり、
+      少なくとも 1 点は当たる (各座標で誤り ≤ グループの大きさ − 1)。
+    k ≥ 最大のグループの大きさのときだけ成り立つこと:
+    - 誤り数 = sklearn の規則 (距離 0 の点どうしの多数決、同票は class 0) から導いた期待値。k がそれより小さいと、
+      同じ距離 0 の点のどれが近傍に入るかが並び順で決まり、少数派のラベルで予測されることがある。
+    (2026-09-29 訂正: Phase 2.5 では M ≤ 誤り数 ≤ P − M も k ≥ 最大グループに限っていたが、限定が強すぎた。)
     - タイトルとキャプションの n は、テストで独立に数えた P と、唯一の元 duplicate_stats の conflicting の両方と一致する。
     """
     config, expect_conflicts = DUPLICATE_CASES[case]
     X_train, X_test, y_train, y_test = config.load()
-    P, M, max_group, in_conflict, expected_errors = count_conflicts(X_train, y_train)
+    P, M, max_group, in_conflict, expected_errors, groups = count_conflicts(X_train, y_train)
     assert P == duplicate_stats(X_train, y_train).conflicting
     if expect_conflicts is not None:
         assert (M > 0) == expect_conflicts, (case, P, M)
@@ -541,11 +652,13 @@ def test_knn_distance_train_accuracy_with_identical_coordinates(case):
     standardize = config.spec().kind == "real"  # 実データの既定は標準化あり (距離 0 の点は標準化しても距離 0)
     for k in sorted({1, 3, max_group, max_group + 4, 15}):
         model = KNNModel().fit(X_train, y_train, {"n_neighbors": k, "weights": "distance"}, standardize=standardize)
-        wrong = model.predict(X_train) != y_train
+        pred = model.predict(X_train)
+        wrong = pred != y_train
+        assert all(len(set(pred[idx])) == 1 for idx in groups), (case, k)
         assert not np.any(wrong & ~in_conflict), (case, k)
+        assert M <= int(wrong.sum()) <= P - M, (case, k, M, int(wrong.sum()), P)
         if k >= max_group:
             assert int(wrong.sum()) == expected_errors, (case, k, int(wrong.sum()), expected_errors)
-            assert M <= int(wrong.sum()) <= P - M, (case, k, M, int(wrong.sum()), P)
     if M > 0:
         assert expected_errors > 0  # 訓練正解率は 1.0 にならない (Iris seed 0 では 1 − 1/70)
 
@@ -556,8 +669,32 @@ def test_knn_distance_train_accuracy_with_identical_coordinates(case):
     title = fig.axes[0].get_title()
     plt.close(fig)
     if P > 0:
-        assert EXCEPT_NOTE in title and f"{P} points" in title, title
-        assert f"{P} 点" in caption, caption
+        assert BELOW_ONE_TITLE in title, title
+        assert f"{P} training points share their coordinates with a different label" in title, title
+        assert ALWAYS_WRONG_CAPTION in caption, caption
+        assert f"{P} 点ある (外れる点の数ではない)" in caption, caption
     else:
-        assert EXCEPT_NOTE not in title and "train accuracy is 1.0 for every k" in title, title
-        assert "違うラベル" not in caption, caption
+        assert BELOW_ONE_TITLE not in title and "train accuracy is 1.0 for every k" in title, title
+        assert ALWAYS_WRONG_CAPTION not in caption and "k によらず 1.0 になる" in caption, caption
+
+
+def test_knn_distance_error_upper_bound_is_reached_iris_sepal_seed42():
+    """上のテストの上限 (誤り数 ≤ P − M) が等号で効く例。上限の assert が自明に通っていないことを示す。
+
+    条件: DataConfig("Iris", None, None, 42, 0.3, features=("sepal_length", "sepal_width"))、標準化なし (あり /
+    なしで結果は同じだった)、weights="distance"、k=1。k=1 は最大のグループ (3 点) より小さいので、大きさ 3 の座標で
+    少数派のラベルの点が近傍として返ると、その座標では 2 点が外れる。
+    等号は、同じ距離 0 の点の並び (sklearn の実装) で決まる。sklearn の変更で変わったら、下の前提の assert が知らせる。
+    不等式そのもの (M ≤ 誤り数 ≤ P − M) は、どの k でも変わらない。
+    """
+    config = DataConfig("Iris", None, None, 42, 0.3, features=("sepal_length", "sepal_width"))
+    X_train, _, y_train, _ = config.load()
+    P, M, max_group, _, expected_errors, _ = count_conflicts(X_train, y_train)
+    # 前提 (実測: 2026-09-29 の読み取りの確認で、この値だった)
+    assert len(X_train) == 70
+    assert (P, M, max_group) == (14, 6, 3)
+    assert duplicate_stats(X_train, y_train).conflicting == 14
+    model = KNNModel().fit(X_train, y_train, {"n_neighbors": 1, "weights": "distance"})
+    errors = int(np.sum(model.predict(X_train) != y_train))
+    assert errors == 8 == P - M, errors
+    assert errors > expected_errors  # k が小さいと、多数決の期待値 (6) より多く外れうる

@@ -17,7 +17,7 @@ from tuning.space import ParamSpec
 
 C_OPTIONS = [0.001, 0.01, 0.1, 1.0, 10.0, 100.0, 1000.0, math.inf]
 PENALTY_LABELS = {"l2": "L2 (係数を全体的に小さく)", "l1": "L1 (不要な係数を 0 に)"}
-ZERO_TOL = 1e-8
+ZERO_TOL = 1e-8  # Models のコードでは使わない (数え方は zero_coefficients)。tests/scale の参照が切り替わったら削除する
 L1_MAX_ITER = 30
 # fit で記録した警告を外へ出し直すときの重複抑制用 ("default" 動作で同じ警告を何度も出さない)
 _REEMIT_REGISTRY: dict = {}
@@ -45,7 +45,7 @@ class LogisticRegressionModel(BaseModel):
         d = self.default_params
         degree = st.slider(
             "多項式特徴量の次数 (degree)", 1, 10, d["degree"], key=self.key("degree"), persist_state="session",
-            help="x1, x2 から x1², x1·x2, x2³ … のような積の特徴量を作る。次数が高いほど複雑な境界を引けるが過学習しやすい",
+            help="2 つの特徴量 a, b から a², a·b, b³ … のような積の特徴量を作る。次数が高いほど複雑な境界を引けるが過学習しやすい",
         )
         C = st.select_slider(
             "正則化の逆数 (C)", C_OPTIONS, value=d["C"], format_func=_format_C, key=self.key("C"), persist_state="session",
@@ -117,6 +117,15 @@ class LogisticRegressionModel(BaseModel):
         names = self.estimator.named_steps["poly"].get_feature_names_out(list(ctx.feature_names))
         return [str(n) for n in names]
 
+    @staticmethod
+    def zero_coefficients(coef: np.ndarray) -> np.ndarray:
+        """「ちょうど 0」の係数 (== 0.0)。図のタイトル "exactly 0" と指標「非ゼロ係数の数」の唯一の定義。
+
+        L1 (liblinear の座標降下) は効かない係数に本当に 0 を置く。L2 はちょうど 0 にはしない。許容誤差で数えると、
+        L2 のごく小さい係数まで "exactly 0" と主張してしまうので、主張どおり厳密に数える。
+        """
+        return np.asarray(coef) == 0.0
+
     @property
     def _coef(self) -> np.ndarray:
         return self.final_estimator.coef_[0]
@@ -125,7 +134,7 @@ class LogisticRegressionModel(BaseModel):
         coef = self._coef
         return {
             "特徴量の数": int(coef.size),
-            "非ゼロ係数の数": int(np.sum(np.abs(coef) > ZERO_TOL)),
+            "非ゼロ係数の数": int(np.sum(~self.zero_coefficients(coef))),
             "係数ノルム ‖w‖": f"{np.linalg.norm(coef):.3g}",
             # 値は短く (AD-8)。打ち切り / 途中停止の区別は係数図のキャプションで説明する
             "収束": "はい" if self.converged else "いいえ",
@@ -149,9 +158,22 @@ class LogisticRegressionModel(BaseModel):
                     "係数は最適解と異なることがある。")
         return None
 
+    def _terms_caption(self, ctx: PlotContext) -> str | None:
+        """次数 2 以上のときの係数の読み方。項の名前は図の目盛りと同じ get_feature_names_out から取る。"""
+        names = self._feature_names(ctx)
+        if int(self.estimator.named_steps["poly"].degree) < 2:
+            return None
+        base = str(ctx.feature_names[0])
+        square = next(n for n in names if n == f"{base}^2")
+        cross = next(n for n in names if n.split() == [base, str(ctx.feature_names[1])])
+        return (f"係数は、その項 (標準化後) を 1 増やし、ほかの項を固定したときの log-odds の変化。"
+                f"次数 2 以上では、{base} を動かすと {square} や {cross} も一緒に動くので、"
+                "元の特徴量 1 つの効果としては読めない (形式上の値)。")
+
     def extra_plots(self, ctx: PlotContext) -> list[tuple[str, Figure] | tuple[str, Figure, str]]:
         coef_fig = self._plot_coefficients(ctx)
-        caption = self._coefficient_caption()
+        parts = [c for c in (self._coefficient_caption(), self._terms_caption(ctx)) if c]
+        caption = "\n\n".join(parts) if parts else None
         coef = ("係数", coef_fig, caption) if caption else ("係数", coef_fig)
         return [coef, ("シグモイド関数", self._plot_sigmoid(ctx))]
 
@@ -160,7 +182,7 @@ class LogisticRegressionModel(BaseModel):
         names = self._feature_names(ctx)
         n = coef.size
         fig, ax = plt.subplots(figsize=(7, max(2.2, 0.9 + 0.16 * n)))
-        zero = np.abs(coef) <= ZERO_TOL
+        zero = self.zero_coefficients(coef)
         pos = np.arange(n)
         ax.barh(pos, coef, color=np.where(coef > 0, CLASS_COLORS[1], CLASS_COLORS[0]), height=0.7)
         # L1 で 0 になった係数は棒が見えないので、灰色の点で示す
@@ -168,7 +190,10 @@ class LogisticRegressionModel(BaseModel):
         ax.set_yticks(pos, names, fontsize=8 if n <= 20 else 7)
         ax.set_ylim(n - 0.5, -0.5)  # 1 次の項を上に
         ax.axvline(0, color="#333333", linewidth=0.8)
-        ax.set_xlabel("coefficient w (features standardized; + pushes toward class 1, − toward class 0)")
+        # 1 行 = 標準化した多項式の項 t_j。z = Σ w_j t_j + b なので、w_j は「ほかの項を固定して t_j を 1 増やしたときの
+        # z の変化」(偏微分)。1 点の寄与 w_j t_j の向きは t_j の符号で変わるので「押す向き」とは書かない
+        ax.set_xlabel("coefficient w (standardized polynomial terms;\n"
+                      "w > 0: larger term → toward class 1, other terms fixed)")
         ax.grid(axis="x", alpha=0.3)
         ax.spines[["top", "right"]].set_visible(False)
         if zero.any():
@@ -180,7 +205,8 @@ class LogisticRegressionModel(BaseModel):
         z = self.estimator.decision_function(ctx.X_train)
         y = ctx.y_train
         # 正則化なしでは |z| が非常に大きくなるので、表示範囲を抑えて外側の点は端に寄せる
-        limit = float(np.clip(np.quantile(np.abs(z), 0.95) * 1.2, 6.0, 30.0))
+        # タイトルに出す値そのもので端に寄せる (表示の丸めと数え方がずれないよう、小数 1 桁に丸めてから使う)
+        limit = round(float(np.clip(np.quantile(np.abs(z), 0.95) * 1.2, 6.0, 30.0)), 1)
         clipped = np.abs(z) > limit
         zc = np.clip(z, -limit, limit)
         jitter = np.random.default_rng(0).uniform(-0.05, 0.05, size=len(y))
@@ -199,7 +225,7 @@ class LogisticRegressionModel(BaseModel):
         ax.set_xlabel("z = w · x + b  (decision function)")
         ax.set_ylabel("P(class 1)  /  true label")
         if clipped.any():
-            ax.set_title(f"{int(clipped.sum())} points with |z| > {limit:.0f} are drawn at the edge", fontsize=9)
+            ax.set_title(f"{int(clipped.sum())} points with |z| > {limit:.1f} are drawn at the edge", fontsize=9)
         ax.legend(loc="center left", bbox_to_anchor=(1.01, 0.5), fontsize=8, frameon=False)
         ax.spines[["top", "right"]].set_visible(False)
         fig.tight_layout()

@@ -71,7 +71,7 @@ def test_priors_shift_boundary():
     for prior1 in (0.2, 0.5, 0.8):
         model = GaussianModel().fit(ctx.X_train, ctx.y_train,
                                     {"variant": "lda", "prior_from_data": False, "prior1": prior1})
-        assert model.metrics(ctx)["推定した P(class 1)"] == f"{prior1:.2f}"
+        assert model.metrics(ctx)["事前確率 P(class 1) (手で指定)"] == f"{prior1:.2f}"
         shares.append(model.predict(grid).mean())
     assert shares[0] < shares[1] < shares[2]
 
@@ -231,3 +231,82 @@ def test_class_labels_in_figures():
     synthetic = class_label_texts(GaussianModel, "Moons", {"variant": "nb"})
     assert any("p(x | class 1)" in t for t in synthetic), synthetic
     assert not any("class 1 (" in t or "class 0 (" in t for t in synthetic)
+
+
+# ---- 事前確率の指標、楕円の確率、密度図の等高線と境界の破線 ----
+def test_prior_metric_label_depends_on_how_the_prior_was_set():
+    """事前確率を手で決めたときの値は推定値ではないので、指標のラベルを分ける。"""
+    ctx = load_ctx("Moons")
+    est = GaussianModel().fit(ctx.X_train, ctx.y_train, {}).metrics(ctx)
+    assert list(est) == ["推定した P(class 1)"] and est["推定した P(class 1)"] == f"{np.mean(ctx.y_train):.2f}"
+    manual = GaussianModel().fit(ctx.X_train, ctx.y_train, {"prior_from_data": False, "prior1": 0.7}).metrics(ctx)
+    assert list(manual) == ["事前確率 P(class 1) (手で指定)"] and manual["事前確率 P(class 1) (手で指定)"] == "0.70"
+
+
+@pytest.mark.parametrize("variant", VARIANTS)
+def test_sigma_ellipses_contain_39_and_86_percent_in_2d(variant):
+    """説明文「2 次元では 1σ の楕円の内側に約 39%、2σ に約 86%」。
+
+    式: 2 次元の正規分布でマハラノビス距離 ≤ s の確率 = χ²(2 自由度) の cdf(s²) = 1 − e^(−s²/2)。
+    図に描いた楕円のパッチそのものに、推定した分布からの乱数 (固定のシード、20 万点。標準誤差 約 0.001) を当てて
+    内側の割合を数え、式と ±0.01 で一致すること。捕まえるもの: 楕円の半径の取り違え (例: 直径と半径、σ と σ²)。"""
+    from scipy.stats import chi2
+
+    from models.gaussian import _ellipse
+
+    for s_, expected in ((1, 0.393), (2, 0.865)):
+        assert 1 - np.exp(-s_**2 / 2) == pytest.approx(expected, abs=5e-4)
+        assert chi2(2).cdf(s_**2) == pytest.approx(expected, abs=5e-4)
+    ctx = load_ctx("Moons", n_samples=300)
+    params = {"variant": variant, **({"reg_param": 0.3} if variant == "qda" else {})}
+    model = GaussianModel().fit(ctx.X_train, ctx.y_train, params)
+    rng = np.random.default_rng(0)
+    for mean, cov in model.class_gaussians():
+        pts = rng.multivariate_normal(mean, cov, size=200_000)
+        for s_ in (1, 2):
+            patch = _ellipse(mean, cov, s_)
+            inside = patch.get_path().contains_points(pts, transform=patch.get_patch_transform())
+            assert inside.mean() == pytest.approx(1 - np.exp(-s_**2 / 2), abs=0.01), (s_, inside.mean())
+    assert "1σ の楕円の内側に約 39%、2σ に約 86%" in model.boundary_description()
+
+
+def _density_axes(fig):
+    return next(ax for ax in fig.axes if ax.get_xlabel())
+
+
+@pytest.mark.parametrize("variant", VARIANTS)
+def test_density_contours_have_equal_heights_for_both_classes(variant):
+    """密度図のタイトル "class-conditional Gaussians (equal-height contours)": 2 クラスの等高線の高さが完全に一致すること。
+    捕まえるもの: クラスごとに levels を自動で決めてしまうこと (「細い山ほど高い」が見えなくなる)。"""
+    from matplotlib.contour import ContourSet
+
+    ctx = load_ctx("Moons", n_samples=200)
+    model = GaussianModel().fit(ctx.X_train, ctx.y_train, {"variant": variant})
+    (_, fig, *_), = model.extra_plots(ctx)
+    ax = _density_axes(fig)
+    sets = [c for c in ax.collections if isinstance(c, ContourSet) and list(c.levels) != [0.0]]
+    assert len(sets) == 2
+    np.testing.assert_array_equal(sets[0].levels, sets[1].levels)
+    if variant != "nb":
+        assert "(equal-height contours)" in ax.get_title()
+    plt.close("all")
+
+
+@pytest.mark.parametrize("prior", [{}, {"prior_from_data": False, "prior1": 0.8}], ids=["estimated", "manual"])
+@pytest.mark.parametrize("variant", VARIANTS)
+def test_density_dashed_line_is_the_models_decision_boundary(variant, prior):
+    """密度図の破線 "boundary: P(y) p(x | y) equal" の上では、モデルの予測確率が 0.5 (± 1e-3)。
+    実測の最大のずれは 1e-4 (格子の補間の分。Moons と実データ 4 組 × 3 種 × 事前確率 2 通り)。
+    捕まえるもの: 破線を事前確率抜きの p(x | y) で描くなど、図の境界と予測の境界が食い違うこと。"""
+    from matplotlib.contour import ContourSet
+
+    ctx = load_ctx("Moons", n_samples=200)
+    params = {"variant": variant, **prior, **({"reg_param": 0.1} if variant == "qda" else {})}
+    model = GaussianModel().fit(ctx.X_train, ctx.y_train, params)
+    (_, fig, *_), = model.extra_plots(ctx)
+    ax = _density_axes(fig)
+    (dashed,) = [c for c in ax.collections if isinstance(c, ContourSet) and list(c.levels) == [0.0]]
+    verts = np.vstack([p.vertices for p in dashed.get_paths() if len(p.vertices)])
+    assert len(verts) > 50
+    assert np.max(np.abs(model.predict_proba(verts) - 0.5)) < 1e-3
+    plt.close("all")

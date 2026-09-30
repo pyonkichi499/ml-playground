@@ -26,7 +26,7 @@ class DecisionTreeModel(BaseModel):
         criterion = st.radio("分割基準 (criterion)", ["gini", "entropy"], horizontal=True, key=self.key("criterion"), persist_state="session")
         min_samples_leaf = st.slider(
             "葉ノードの最小サンプル数 (min_samples_leaf)", 1, 20, d["min_samples_leaf"],
-            key=self.key("min_samples_leaf"), persist_state="session", help="大きいほど少数の点だけの葉を作れず、境界がなめらかになる",
+            key=self.key("min_samples_leaf"), persist_state="session", help="大きいほど少数の点だけの葉を作れず、境界の細かい出っ張りが減る",
         )
         return {"max_depth": max_depth, "criterion": criterion, "min_samples_leaf": min_samples_leaf}
 

@@ -216,3 +216,136 @@ def test_class_labels_in_figures():
     synthetic = class_label_texts(LogisticRegressionModel, "Moons", {})
     assert any("train, class 1" in t for t in synthetic), synthetic
     assert not any("class 1 (" in t or "class 0 (" in t for t in synthetic)
+
+
+# ---- degree の help、係数図の軸と説明文、"exactly 0"、端に描いた点 ----
+def test_degree_help_does_not_name_x1_x2():
+    """degree の help は特徴量の名前を知らない (render_params は ctx を受け取らない) ので、x1, x2 と書かない。"""
+    import inspect
+
+    source = inspect.getsource(LogisticRegressionModel.render_params)
+    assert "x1, x2 から" not in source and "2 つの特徴量 a, b から" in source
+
+
+def test_coefficients_are_for_standardized_polynomial_terms():
+    """軸 "standardized polynomial terms": 係数の直前の段が StandardScaler、その前が多項式特徴量であること。"""
+    from sklearn.linear_model import LogisticRegression
+    from sklearn.preprocessing import PolynomialFeatures, StandardScaler
+
+    est = LogisticRegressionModel().build({"degree": 3})
+    assert [type(step) for _, step in est.steps] == [PolynomialFeatures, StandardScaler, LogisticRegression]
+
+
+def _bars_by_name(fig):
+    """係数図の目盛りの名前 → その位置の棒の値。"""
+    from matplotlib.patches import Rectangle
+
+    ax = fig.axes[0]
+    bars = {round(p.get_y() + p.get_height() / 2, 6): p.get_width() for p in ax.patches if isinstance(p, Rectangle)}
+    return {t.get_text(): bars[round(y, 6)] for t, y in zip(ax.get_yticklabels(), ax.get_yticks())}
+
+
+@pytest.mark.parametrize("dataset", ["Palmer Penguins", "Moons"])
+def test_coefficient_bar_is_the_change_of_z_when_that_named_term_grows_by_one(dataset):
+    """軸 "w > 0: larger term → toward class 1, other terms fixed" を、図の名前と棒で確かめる。
+
+    3 段で結ぶ: (1) 目盛りの名前 → 多項式の列 (get_feature_names_out)、(2) その名前どおりに元の単位の入力から
+    計算して標準化した値 = Pipeline が作る項の値、(3) その項だけを +1 したときの z の変化 = 図のその名前の棒の値。
+    捕まえるもの: 棒と名前の並びのずれや取り違え (z が項の 1 次式であることだけを見る検算は、どんな重みでも通る)。
+    """
+    from model_grid import real_ctx
+
+    ctx = real_ctx(dataset) if dataset != "Moons" else load_ctx("Moons", n_samples=200)
+    model = LogisticRegressionModel().fit(ctx.X_train, ctx.y_train, {"degree": 3})
+    (_, fig, *_), _sig = model.extra_plots(ctx)
+    bars = _bars_by_name(fig)
+    poly, scaler, clf = (model.estimator.named_steps[k] for k in ("poly", "scaler", "clf"))
+    names = [str(n) for n in poly.get_feature_names_out(list(ctx.feature_names))]
+    assert sorted(bars) == sorted(names) and len(names) == 9
+    x = ctx.X_train[:5]
+    t = scaler.transform(poly.transform(x))
+    f = dict(zip(ctx.feature_names, x.T))
+    min_abs_w = np.inf
+    for j, name in enumerate(names):
+        raw = np.prod([f[tok.split("^")[0]] ** (int(tok.split("^")[1]) if "^" in tok else 1) for tok in name.split()],
+                      axis=0)
+        np.testing.assert_allclose((raw - scaler.mean_[j]) / scaler.scale_[j], t[:, j], rtol=1e-10, atol=1e-12)
+        t_plus = t.copy()
+        t_plus[:, j] += 1.0
+        dz = clf.decision_function(t_plus) - clf.decision_function(t)
+        np.testing.assert_allclose(dz, bars[name], rtol=1e-10, atol=1e-12)
+        min_abs_w = min(min_abs_w, abs(bars[name]))
+    assert min_abs_w > 1e-3  # 丸め誤差 (約 1e-14) に比べて十分大きい (許容誤差の余裕の確認)
+    assert "standardized polynomial terms" in fig.axes[0].get_xlabel() and "other terms fixed" in fig.axes[0].get_xlabel()
+    assert "pushes" not in fig.axes[0].get_xlabel()
+    plt.close("all")
+
+
+def _coef_caption(ctx, params):
+    model = LogisticRegressionModel().fit(ctx.X_train, ctx.y_train, params)
+    coef_item, _ = model.extra_plots(ctx)
+    _, fig, *rest = coef_item
+    ticks = {t.get_text() for t in fig.axes[0].get_yticklabels()}
+    plt.close("all")
+    return (rest[0] if rest else None), ticks, model
+
+
+def test_terms_caption_only_from_degree_two_and_uses_tick_names():
+    """次数 2 以上のときだけ「元の特徴量 1 つの効果としては読めない」と補う。項の名前は図の目盛りと同じ表記。"""
+    from model_grid import real_ctx
+
+    moons = load_ctx("Moons", n_samples=200)
+    caption, _, _ = _coef_caption(moons, {"degree": 1})
+    assert caption is None or "形式上の値" not in caption
+    caption, ticks, _ = _coef_caption(moons, {"degree": 3})
+    assert "x1 を動かすと x1^2 や x1 x2 も一緒に動く" in caption and {"x1", "x1^2", "x1 x2"} <= ticks
+    penguins = real_ctx("Palmer Penguins")
+    caption, ticks, _ = _coef_caption(penguins, {"degree": 3})
+    assert "bill_length を動かすと bill_length^2 や bill_length bill_depth も一緒に動く" in caption
+    assert {"bill_length", "bill_length^2", "bill_length bill_depth"} <= ticks
+    assert "x1" not in caption and "x2" not in caption
+
+
+def test_terms_caption_joins_the_non_convergence_caption():
+    """未収束 (L1 の反復上限) の説明と、次数 2 以上の読み方の説明が、1 つの caption に並ぶこと。"""
+    ctx = load_ctx("Moons", n_samples=300)
+    caption, _, model = _coef_caption(ctx, {"degree": 10, "C": 1000.0, "penalty": "l1"})
+    assert not model.converged
+    assert "収束: いいえ" in caption and "形式上の値" in caption
+
+
+@pytest.mark.parametrize("penalty", ["l1", "l2"])
+def test_exactly_zero_title_counts_exact_zeros(penalty):
+    """タイトル "k of n coefficients are exactly 0" の k は、ちょうど 0 (== 0.0) の数で、指標の「非ゼロ係数の数」と
+    足して n になる。L2 はちょうど 0 にしないのでタイトルが出ない。"""
+    ctx = load_ctx("Moons", n_samples=200)
+    model = LogisticRegressionModel().fit(ctx.X_train, ctx.y_train, {"degree": 5, "C": 0.1, "penalty": penalty})
+    coef = model.final_estimator.coef_.ravel()
+    (_, fig, *_), _sig = model.extra_plots(ctx)
+    title = fig.axes[0].get_title()
+    n_zero = int(np.sum(coef == 0.0))
+    assert model.metrics(ctx)["非ゼロ係数の数"] == coef.size - n_zero
+    if penalty == "l1":
+        assert n_zero > 0 and title == f"{n_zero} of {coef.size} coefficients are exactly 0 (grey dots)"
+    else:
+        assert n_zero == 0 and title == ""
+    plt.close("all")
+
+
+def test_points_beyond_limit_are_counted_and_drawn_at_the_edge():
+    """シグモイド図のタイトル "n points with |z| > limit are drawn at the edge": n は |z| > limit の点の数で、
+    その点は x = ±limit (端) に描かれる。limit はタイトルに出る値そのもの。"""
+    import re
+
+    ctx = load_ctx("Circles", n_samples=200)
+    model = LogisticRegressionModel().fit(ctx.X_train, ctx.y_train, {"degree": 10, "C": math.inf})
+    _, (_, fig, *_) = model.extra_plots(ctx)
+    ax = fig.axes[0]
+    m = re.fullmatch(r"(\d+) points with \|z\| > ([\d.]+) are drawn at the edge", ax.get_title())
+    assert m, ax.get_title()
+    n, limit = int(m.group(1)), float(m.group(2))
+    z = model.estimator.decision_function(ctx.X_train)
+    assert n == int(np.sum(np.abs(z) > limit)) > 0
+    xs = np.concatenate([c.get_offsets()[:, 0] for c in ax.collections if len(c.get_offsets())])
+    assert int(np.sum(np.isclose(np.abs(xs), limit))) == n
+    plt.close("all")

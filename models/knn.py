@@ -28,12 +28,19 @@ CURVE_ADVICE = "k の良し悪しは CV の線 (★) で判断する (test の�
 
 
 def _distance_caption(n_points: int) -> str:
+    """distance 重みのキャプション。n_points = 同じ座標に違うラベルがある訓練点の数 (duplicate_stats().conflicting)。
+
+    同じ座標の訓練点は、クエリが同じなので近傍も票も同じになり、必ず同じ予測になる。ラベルが食い違う座標
+    グループがあれば、そこで少なくとも 1 点は必ず外れる (k によらない)。n_points は外れる点の数ではない。
+    """
     if n_points == 0:
-        return ("distance 重みでは、訓練点の予測は距離 0 にある自分自身だけで決まるので、訓練正解率は k によらず 1.0 になる。"
+        return ("distance 重みでは、訓練点の予測は距離 0 にある点 (自分と同じ座標の点) だけで決まる。"
+                "このデータには、同じ座標でラベルの違う訓練点が無いので、訓練正解率は k によらず 1.0 になる。"
                 + CURVE_ADVICE)
-    return ("distance 重みでは、訓練点の予測は距離 0 にある点 (自分と同じ座標の点) だけで決まる。"
-            f"このデータには、同じ座標に違うラベルがある訓練点が {n_points} 点あり、"
-            "そこでは多数派のクラスしか当てられないので、訓練正解率は 1.0 にならないことがある。" + CURVE_ADVICE)
+    return ("distance 重みでは、訓練点の予測は距離 0 にある点 (自分と同じ座標の点) だけの投票で決まる (同数なら class 0)。"
+            "同じ座標の点はどれも同じ予測になるので、そこにラベルの違う点が混ざっていると、少なくとも 1 点は必ず外れる。"
+            f"このデータでは、そういう座標にある訓練点が {n_points} 点ある (外れる点の数ではない) ので、"
+            "訓練正解率はどの k でも 1.0 未満になる。" + CURVE_ADVICE)
 
 
 class ClampedKNeighborsClassifier(KNeighborsClassifier):
@@ -180,7 +187,7 @@ class KNNModel(BaseModel):
         shape = "ひし形 (p=1 の等距離線)" if est is not None and est.p == 1 else "円"
         if est is not None and est.weights == "distance":
             background = (f"近い {k} 点の票を **距離の逆数で重み付けしたときの class 1 の割合**"
-                          "（近い点ほど票が重い。訓練点の真上では、その点自身のクラスで決まる）")
+                          "（近い点ほど票が重い。訓練点の真上では、同じ座標にある点の票だけで決まる）")
         else:
             background = f"近い {k} 点のうち **class 1 に投票した点の割合**"
         return (
@@ -189,7 +196,48 @@ class KNNModel(BaseModel):
             f"- 紫の × と破線の{shape}: 境界ぎわの点と、その k 個の近傍が入る範囲（細線 = 近傍。小さいときは隅に拡大図）\n"
             "- ● 訓練データ / ▲ テストデータ"
             + self._standardize_note()
+            + self._one_axis_note()
         )
+
+    def one_axis_dominance(self) -> int | None:
+        """近傍の範囲が一方の軸の幅より広いとき、距離を実質的に決めている軸 (0 = 横軸, 1 = 縦軸) を返す。
+
+        近傍の範囲は、訓練点ごとの k 番目の近傍までの距離 (モデルの空間) の中央値を、軸ごとに元の単位へ戻した
+        半径 (= r × σ_i) で測る。それが軸 i の訓練データの幅以上なら、軸 i の差は近傍の選び方にほとんど効かない
+        (どの点から見ても、軸 i の端から端までが近傍の範囲に入る)。一方の軸だけがそうなら、もう一方の軸だけで
+        距離が決まっている。次のときは None (注記を出さない)。
+        - 両方の軸がそうなら、ただ k が大きいだけ。
+        - k が訓練点の数の半分以上 (2k ≥ n) のとき。近傍が訓練データの大部分を占めるので、どの軸で選んでも
+          ほぼ同じ点が入り、「距離を決めている軸」の話に意味がない (単位のそろった Moons でも、訓練 25 点・k=20 以上で
+          縦軸の幅だけを越えて注記が出てしまっていた)。
+        標準化なしの Penguins (mm × g、訓練 153 点) は、k が 76 までなら軸 1 (g) を返し、77 以上で None (2k ≥ n の条件による。
+        この条件が無いと k=153 でも 1 を返す: 半径が g の幅を越えないため)。図に依存しない (fit したモデルだけで決まる)。
+        """
+        if self.estimator is None or len(self._train_X) < 2:
+            return None
+        knn = self._knn
+        k = min(knn.n_neighbors, len(self._train_X))
+        if 2 * k >= len(self._train_X):
+            return None
+        dist, _ = knn.kneighbors(self._to_model_space(self._train_X), n_neighbors=k)
+        radius = float(np.median(dist[:, -1])) * self._sigma
+        span = np.ptp(self._train_X, axis=0)
+        wide = radius >= span
+        if wide.sum() != 1:
+            return None
+        return int(np.flatnonzero(~wide)[0])
+
+    def _one_axis_note(self) -> str:
+        axis = self.one_axis_dominance()
+        if axis is None:
+            return ""
+        other = "横軸" if axis == 1 else "縦軸"
+        name = "縦軸" if axis == 1 else "横軸"
+        note = (f"\n- 近傍の範囲 (k 番目の近傍までの距離の中央値) が{other}の特徴量の幅より広い: "
+                f"距離はほぼ{name}の特徴量だけで決まっていて、{other}の値は近傍の選び方にほとんど効いていない")
+        if not isinstance(self.estimator, Pipeline):
+            note += "。単位の違う特徴量なら「特徴量を標準化する」で直る"
+        return note
 
     def _standardize_note(self) -> str:
         if not isinstance(self.estimator, Pipeline):
@@ -254,12 +302,19 @@ class KNNModel(BaseModel):
                                  show_neighbours=not thumbnail)
         # 通常の図で近傍が小さすぎて見えないときは、拡大図を隅に添える (サムネイルでは付けない)。
         # 楕円の半軸を軸ごとに図の幅・高さと比べ、小さい方で判定する
+        # 拡大図の窓 (q ± 1.6 × 半軸) は、主図の範囲との共通部分に切り詰める (標準化なしで半軸が軸の幅を
+        # 越えると、窓・枠・接続線が図の外まで伸びていた)。切り詰めた窓が一方の軸で主図の幅いっぱいなら、その軸は
+        # 拡大しても意味がない (近傍の範囲が軸の幅を越えている) ので拡大図は付けない。そのことは説明文で示す
+        lo = np.maximum(q - 1.6 * half_axes, [xx.min(), yy.min()])
+        hi = np.minimum(q + 1.6 * half_axes, [xx.max(), yy.max()])
         span = np.array([xx.max() - xx.min(), yy.max() - yy.min()])
-        if not thumbnail and np.min(half_axes / span) < INSET_THRESHOLD:
-            self._add_zoom_inset(ax, q, half_axes, neighbours, xx, yy, ctx)
+        ratio = (hi - lo) / span
+        if not thumbnail and np.all(ratio < 1.0) and np.min(half_axes / span) < INSET_THRESHOLD:
+            self._add_zoom_inset(ax, q, half_axes, neighbours, xx, yy, ctx, window=(lo, hi))
 
     def _add_zoom_inset(self, ax: Axes, q: np.ndarray, half_axes: np.ndarray, neighbours: np.ndarray,
-                        xx: np.ndarray, yy: np.ndarray, ctx: PlotContext) -> None:
+                        xx: np.ndarray, yy: np.ndarray, ctx: PlotContext,
+                        window: tuple[np.ndarray, np.ndarray]) -> None:
         X_train, y_train = ctx.X_train, ctx.y_train
         X_test, y_test = (ctx.X_test, ctx.y_test) if ctx.has_test else (None, None)
         x0, x1, y0, y1 = xx.min(), xx.max(), yy.min(), yy.max()
@@ -273,8 +328,7 @@ class KNNModel(BaseModel):
                   for name, (cx, cy) in corners.items()}
         cx, cy = corners[min(counts, key=counts.get)]
         ins = ax.inset_axes([cx, cy, size, size])
-        half_x, half_y = 1.6 * half_axes
-        lo_x, hi_x, lo_y, hi_y = q[0] - half_x, q[0] + half_x, q[1] - half_y, q[1] + half_y
+        (lo_x, lo_y), (hi_x, hi_y) = window  # 主図の範囲に切り詰めた窓
         gx, gy = np.meshgrid(np.linspace(lo_x, hi_x, 80), np.linspace(lo_y, hi_y, 80))
         zz = self.estimator.predict_proba(np.c_[gx.ravel(), gy.ravel()])[:, 1].reshape(gx.shape)
         ins.contourf(gx, gy, zz, levels=np.linspace(0, 1, 21), cmap=PROBA_CMAP, alpha=0.4, vmin=0, vmax=1)
@@ -343,8 +397,8 @@ class KNNModel(BaseModel):
                 title = ("distance weighting: train accuracy is 1.0 for every k\n"
                          "(each training point is its own nearest neighbour at distance 0)")
             else:
-                title = ("distance weighting: train accuracy is 1.0 for every k,\n"
-                         f"except where identical coordinates carry different labels: {n_points} points")
+                title = ("distance weighting: train accuracy is below 1.0 for every k:\n"
+                         f"{n_points} training points share their coordinates with a different label")
             ax.set_title(title, fontsize=9)
         ax.grid(alpha=0.3)
         ax.legend(loc="center left", bbox_to_anchor=(1.01, 0.5), fontsize=8, frameon=False)

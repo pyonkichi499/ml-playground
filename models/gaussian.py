@@ -148,14 +148,20 @@ class GaussianModel(BaseModel):
         return est.class_prior_ if isinstance(est, GaussianNB) else est.priors_
 
     def metrics(self, ctx: PlotContext) -> dict[str, Any]:
-        return {"推定した P(class 1)": f"{self.priors[1]:.2f}"}
+        # 事前確率を手で決めたときは推定値ではないので、ラベルを分ける
+        label = "推定した P(class 1)" if self._fitted_params()["prior_from_data"] else "事前確率 P(class 1) (手で指定)"
+        return {label: f"{self.priors[1]:.2f}"}
+
+    def _fitted_params(self) -> dict[str, Any]:
+        return {**self.default_params, **self.params}
 
     # ---- 決定境界図 ----
     def boundary_description(self) -> str:
         return (
             "- 背景色: ベイズの定理で求めた **class 1 の確率** P(class 1 | x)（青 = class 0、橙 = class 1）\n"
             "- 黒線: 確率 0.5 の決定境界\n"
-            "- 色付きの楕円: 各クラスについて推定した正規分布 p(x | y) の 1σ・2σ の等高線（+ は平均）\n"
+            "- 色付きの楕円: 各クラスについて推定した正規分布 p(x | y) の 1σ・2σ の等高線（+ は平均）。"
+            "2 次元では 1σ の楕円の内側に約 39%、2σ に約 86% が入る（1 次元の 68% / 95% とは違う）\n"
             "- ● 訓練データ / ▲ テストデータ"
         )
 
