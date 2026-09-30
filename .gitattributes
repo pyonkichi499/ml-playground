@@ -1,0 +1,8 @@
+# 実データと NOTICE は、バイト列をそのまま扱う（改行を変換しない）。tests/test_real_datasets.py が SHA-256 で照合するため
+data/real/* -text
+
+# ソースと文書は、どの OS で checkout しても LF
+*.py text eol=lf
+*.md text eol=lf
+*.toml text eol=lf
+uv.lock text eol=lf
