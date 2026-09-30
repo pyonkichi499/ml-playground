@@ -10,10 +10,15 @@ from models.base import FitError, PlotContext
 
 METRICS_PER_ROW = 4
 STANDARDIZE_NO_EFFECT = (
-    "このモデルでは「特徴量を標準化する」は結果を変えません（木、LDA、Naive Bayes、reg_param = 0 の QDA は、"
-    "現実的な単位の範囲では特徴量のスケールに左右されません。ロジスティック回帰と MLP はモデルの中ですでに"
-    "標準化しています）。"
+    "このモデルでは「特徴量を標準化する」は結果をほとんど変えません（特徴量ごとの拡大縮小で、数値の丸めによる違いを除いて結果が変わりません）。"
 )
+STANDARDIZE_BUILTIN = (
+    "このモデルでは「特徴量を標準化する」は結果を変えません（モデルの中ですでに標準化しています）。"
+)
+STANDARDIZE_UNIT_DEPENDENT = (
+    "単位によって結果が変わることがあります。このモデルには標準化を適用していません。"
+)
+BUILTIN_STANDARDIZING = ("LogisticRegressionModel", "MLPModel")
 STANDARDIZE_NOT_APPLIED_QDA = (
     "このモデルには標準化を適用していません。QDA の reg_param は特徴量の単位に依存するため、"
     "単位の違う特徴量の組では結果が単位の選び方で変わります。"
@@ -24,13 +29,19 @@ def standardize_note(model, params: dict, standardize: bool) -> str | None:
     """「特徴量を標準化する」が on なのに、このモデルでは標準化されないときの説明 (AD-14.4)。なければ None。
 
     make_estimator は scale_sensitive なモデル (k-NN・SVM) にだけ標準化を付けるので、それ以外では設定が効かない。
-    理由は 2 通り (アーキテクトの決定): 一般 (木・LDA・NB・reg_param = 0 の QDA はスケール不変、LogReg・MLP は
-    内部で標準化済み) と、reg_param > 0 の QDA (単位に依存する)。後者は params (variant, reg_param) で見分ける。
+    理由は 4 通り (AD-14.4 の訂正): 木・RF・GB・LDA は特徴量ごとの拡大縮小で、数値の丸めによる違いを除いて結果が変わらない / LogReg・MLP は内部で標準化済み /
+    Naive Bayes と QDA (reg_param = 0) は単位で結果が変わりうるが標準化は適用しない / reg_param > 0 の QDA は単位に
+    依存する (別の文言)。Gaussian の variant と reg_param は params で見分ける。
     """
     if not standardize or model.scale_sensitive:
         return None
     if params.get("variant") == "qda" and float(params.get("reg_param", 0.0)) > 0:
         return STANDARDIZE_NOT_APPLIED_QDA
+    variant = params.get("variant")
+    if variant in ("nb", "qda"):
+        return STANDARDIZE_UNIT_DEPENDENT
+    if type(model).__name__ in BUILTIN_STANDARDIZING:
+        return STANDARDIZE_BUILTIN
     return STANDARDIZE_NO_EFFECT
 
 
@@ -85,11 +96,11 @@ with left:
     st.pyplot(fig)
     plt.close(fig)
 with right:
-    st.markdown(
-        model.boundary_description()
-        + "\n\n訓練の正解率が高いのにテストの正解率が低い場合は **過学習** のサイン。"
-        "ハイパーパラメータを動かして境界の形がどう変わるか観察してみましょう。"
-    )
+    advice = "ハイパーパラメータを動かして境界の形がどう変わるか観察してみましょう。"
+    if ctx.has_test:
+        # 訓練とテストの正解率の差で過学習を見分けられるのは、テストデータがあるときだけ (IZ-15 (a))
+        advice = "訓練の正解率が高いのにテストの正解率が低い場合は **過学習** のサイン。" + advice
+    st.markdown(model.boundary_description() + "\n\n" + advice)
     with st.expander("選択中のハイパーパラメータ"):
         st.json(params)
 

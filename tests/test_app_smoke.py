@@ -12,9 +12,11 @@ import math
 import time
 from pathlib import Path
 
+import numpy as np
 import pytest
 from streamlit.testing.v1 import AppTest
 
+from data.generator import DataConfig
 from models import MODEL_REGISTRY, BaseModel
 from tuning.space import check_space
 
@@ -107,6 +109,7 @@ def test_playground_defaults_and_without_test_data(name):
     assert values["テストデータの正解率"] != "—"
     assert at.subheader[0].value == "決定境界"
     has_extra_plots = len(at.subheader) >= 2  # SVM のように追加の図を持たないモデルもある
+    assert any(OVERFIT_HINT in m.value for m in at.markdown)  # テストがあるので過学習の見分け方を出す
 
     # テストデータなし: テスト正解率は「—」、追加の図は訓練データ/CV で描けていること
     # (図の数は has_test で変わってよいので固定しない)
@@ -118,11 +121,16 @@ def test_playground_defaults_and_without_test_data(name):
         assert len(at.subheader) >= 2, "extra plots disappeared without test data"
     texts = [str(e.value) for e in (*at.caption, *at.warning)]
     assert not [t for t in texts if any(bad in t for bad in SUSPICIOUS)], texts
+    # テストが無いと訓練とテストの差は見られないので、過学習の見分け方は出さない。観察を促す一文は残る (IZ-15 (a))
+    assert not any(OVERFIT_HINT in m.value for m in at.markdown)
+    assert any("境界の形がどう変わるか" in m.value for m in at.markdown)
     assert not [v for v in metric_values(at).values() if str(v).strip().lower() in ("nan", "none", "inf")]
 
 
 #: 画面に出てはいけない「例外めいた」文言
 SUSPICIOUS = ("Traceback", "Error", "Exception", "エラー")
+#: テストデータがあるときだけ出す、過学習の見分け方の文 (app_pages/playground.py)
+OVERFIT_HINT = "テストの正解率が低い場合は **過学習** のサイン"
 
 
 def _set(kind: str, key: str, value):
@@ -417,24 +425,41 @@ def test_svm_on_penguins_standardize_changes_the_boundary():
     detail = f"agreement={agreement:.3f}, on={on}, off={off}"
     assert agreement < 1.0, detail
     assert (on["サポートベクター数"], on["テストデータの正解率"]) != (off["サポートベクター数"], off["テストデータの正解率"]), detail
-    # スケールに左右されない (または内部で標準化済みの) モデルでは、標準化 on のとき理由を説明する
-    assert not [c for c in at.caption if "結果を変えません" in c.value]  # SVM は効くので出ない
+    # 標準化が効かないモデルでは、標準化 on のとき理由を説明する。言い方はモデルで違う (AD-14.4 の訂正)
+    MARK = "「特徴量を標準化する」は結果"  # 標準化が効かないモデルの caption 共通の書き出し
+    NEW = "特徴量ごとの拡大縮小で、数値の丸めによる違いを除いて結果が変わりません"
+    unit_note = "単位によって結果が変わることがあります。このモデルには標準化を適用していません。"
+    assert not [c for c in at.caption if MARK in c.value]  # SVM は効くので出ない
     at.sidebar.checkbox(key="data.real.standardize").check()
     at.sidebar.selectbox(key="playground.model").set_value(DT)
     step(at)
-    note = [c.value for c in at.caption if "結果を変えません" in c.value]
-    assert len(note) == 1 and "現実的な単位の範囲では" in note[0], note
-    # reg_param = 0 の QDA は一般の文言、reg_param > 0 の QDA は「標準化を適用していない・単位に依存」の文言
+    note = [c.value for c in at.caption if MARK in c.value]
+    assert len(note) == 1 and NEW in note[0], note
+    assert "結果をほとんど変えません" in note[0] and "現実的な単位の範囲" not in note[0] and "Naive Bayes" not in note[0], note
+    assert not any(unit_note in c.value for c in at.caption)
+    at.sidebar.selectbox(key="playground.model").set_value(LOGREG)
+    step(at)
+    assert any("モデルの中ですでに標準化しています" in c.value for c in at.caption)
+    # Gaussian: LDA は決定木と同じ言い方、NB と QDA (reg_param = 0) は「単位によって変わることがある」、
+    # reg_param > 0 の QDA は「標準化を適用していない・単位に依存」の文言
     at.sidebar.selectbox(key="playground.model").set_value(GAUSS)
     at.run()
-    at.sidebar.radio(key="GaussianModel.variant").set_value("qda")
+    at.sidebar.radio(key="GaussianModel.variant").set_value("lda")
     step(at)
-    assert any("現実的な単位の範囲では" in c.value for c in at.caption)
+    lda = [c.value for c in at.caption if MARK in c.value]
+    assert len(lda) == 1 and NEW in lda[0], lda
+    assert not any(unit_note in c.value for c in at.caption)
+    for variant in ("nb", "qda"):
+        at.sidebar.radio(key="GaussianModel.variant").set_value(variant)
+        step(at)
+        captions = [c.value for c in at.caption]
+        assert unit_note in captions, (variant, captions)
+        assert not any(MARK in c or "現実的な単位の範囲" in c for c in captions), captions
     at.sidebar.slider(key="GaussianModel.reg_param").set_value(0.5)
     step(at)
     captions = [c.value for c in at.caption]
-    assert any("標準化を適用していません" in c for c in captions), captions
-    assert not any("結果を変えません" in c for c in captions), captions
+    assert any("QDA の reg_param は特徴量の単位に依存" in c for c in captions), captions
+    assert unit_note not in captions and not any(MARK in c for c in captions), captions
     # 合成データの既定は off (Moons の数字は変わらない)
     at.sidebar.selectbox(key="data.dataset").set_value("Moons")
     step(at)
@@ -467,13 +492,15 @@ def test_real_data_round_trip_and_data_card():
 
     at.switch_page("app_pages/tuning.py")
     step(at)
+    # 探索ページに居る間も、同じ特徴量の組が使われている (往復の向こう側。D3)
+    assert at.session_state["data_config"].normalized().features == ("sepal_width", "petal_length")
     at.switch_page("app_pages/playground.py")
     step(at)
     assert at.sidebar.selectbox(key="data.Iris.preset").value == "free"
     assert at.sidebar.selectbox(key="data.Iris.feature_x").value == "sepal_width"
     assert at.sidebar.selectbox(key="data.Iris.feature_y.sepal_width").value == "petal_length"
     assert at.sidebar.slider(key="data.n_samples").value == 350 and at.sidebar.slider(key="data.noise").value == 0.35
-    assert at.sidebar.slider(key="data.n_samples").disabled
+    assert at.sidebar.slider(key="data.n_samples").disabled and at.sidebar.slider(key="data.noise").disabled
 
     # seed 0 (test_size 0.3) では、食い違う点が訓練の中にもあるので、この 1 行は出ない
     at.sidebar.selectbox(key="data.Iris.preset").set_value("petal_length,petal_width")
@@ -488,3 +515,44 @@ def test_real_data_round_trip_and_data_card():
     card = _card_text(at)
     assert "訓練データの中には、同じ座標で class が食い違う点はありません" in card
     assert "テスト側" not in card
+
+
+@pytest.mark.parametrize("model_name, params", [(DT, {}), (RF, {}), (GB, {}), (GAUSS, {"variant": "lda"})])
+def test_tree_family_and_lda_unchanged_by_per_feature_rescaling(model_name, params):
+    """caption「特徴量ごとの拡大縮小で結果が変わりません」の裏づけ: Penguins (mm と g) の片方の単位を変えて学習し
+    直しても、決定木・ランダムフォレスト・勾配ブースティング・LDA の予測は同じ (数値誤差の範囲)。標準化は適用されないので、フラグではなく特徴量を直接変える。"""
+    config = DataConfig("Palmer Penguins", 300, 0.0, 42, 0.3, features=("bill_length_mm", "body_mass_g"), standardize=False)
+    X_train, X_test, y_train, _ = config.load()
+    scale = np.array([1.0, 0.001])  # 体重を g から kg に
+    model = MODEL_REGISTRY[model_name]
+    raw = model().fit(X_train, y_train, params).predict(X_test)
+    scaled = model().fit(X_train * scale, y_train, params).predict(X_test * scale)
+    assert float((raw == scaled).mean()) >= 0.99
+
+
+# 標準化が効かない (scale_sensitive = False) モデルの分類 (AD-14.4)。caption の言い方はこの分類で決まる。
+# Gaussian は variant ごとに分かれる。新しいモデルを足したら、ここに分類を足す
+SCALE_INVARIANT_KEYS = {DT, RF, GB, "GAUSS:lda"}  # 特徴量ごとの拡大縮小で (数値の丸めを除いて) 結果が変わらない
+BUILT_IN_STANDARDIZE_KEYS = {LOGREG, MLP}  # モデルの中ですでに標準化している
+UNIT_DEPENDENT_KEYS = {"GAUSS:nb", "GAUSS:qda"}  # 単位で結果が変わりうる。標準化は適用しない
+
+
+def test_every_non_scale_sensitive_model_is_classified():
+    """scale_sensitive = False のモデルはすべて、不変 / 内蔵 / 単位依存のどれかに明示的に分類されている。"""
+    keys = set()
+    for name, cls in MODEL_REGISTRY.items():
+        if cls.scale_sensitive:
+            continue
+        if name == GAUSS:
+            (variant_spec,) = [s for s in cls.search_space() if s.name == "variant"]
+            keys |= {f"GAUSS:{v}" for v in variant_spec.choices}
+        else:
+            keys.add(name)
+    classified = SCALE_INVARIANT_KEYS | BUILT_IN_STANDARDIZE_KEYS | UNIT_DEPENDENT_KEYS
+    assert not (SCALE_INVARIANT_KEYS & BUILT_IN_STANDARDIZE_KEYS or SCALE_INVARIANT_KEYS & UNIT_DEPENDENT_KEYS
+                or BUILT_IN_STANDARDIZE_KEYS & UNIT_DEPENDENT_KEYS), "分類が重複している"
+    assert keys == classified, (
+        f"分類表に無い: {sorted(keys - classified)}、モデルが無い: {sorted(classified - keys)}。"
+        "新しいモデルの分類を決める。不変と分類するなら、RF・GB と同じ型の裏づけテストも足す"
+        " (test_tree_family_and_lda_unchanged_by_per_feature_rescaling)"
+    )
