@@ -1,6 +1,6 @@
 # ML Playground
 
-2 次元のトイデータと実データ（Palmer Penguins、Iris）で、分類アルゴリズムとハイパーパラメータの挙動を **目で見て** 学ぶための Streamlit アプリです。
+2 次元のトイデータと実データ（Palmer Penguins、Iris、Wine、Breast Cancer）で、分類アルゴリズムとハイパーパラメータの挙動を **目で見て** 学ぶための Streamlit アプリです。
 
 - **プレイグラウンド**: 1 つのモデルのハイパーパラメータを動かし、決定境界・正解率・モデル固有の図がどう変わるかを観察する。
 - **ハイパーパラメータ探索**: グリッドサーチ / ランダムサーチ / TPE を同じ条件で走らせて比べ、交差検証とテストデータの役割を学ぶ。
@@ -45,7 +45,7 @@ uv run pytest -q -k "knn"                          # 名前に knn を含むテ�
 
 | 項目 | 範囲（既定値） |
 |---|---|
-| データセット | Moons / Circles / Linear Separable / Palmer Penguins / Iris（Moons）。前の 3 つは合成データ、後の 2 つは実データ |
+| データセット | Moons / Circles / Linear Separable / Palmer Penguins / Iris / Wine / Breast Cancer（Moons）。前の 3 つは合成データ、後の 4 つは実データ |
 | サンプル数 (n_samples) | 50〜1000（200）。実データでは使わない（件数は固定。スライダーは無効になる） |
 | ノイズの強さ (noise) | 0.0〜0.5（0.2）。実データでは使わない |
 | ランダムシード | 0〜10000（42）。訓練 / テストの分け方（合成データでは点の生成も）を決める |
@@ -55,12 +55,14 @@ uv run pytest -q -k "knn"                          # 名前に knn を含むテ�
 
 この設定は 2 つのページで共通で、ページを切り替えても保持されます。
 
-**実データ**: どちらも元は 3 クラスのデータから 2 クラスを取り出し、4 つの特徴量から 2 つを選んで 2 次元にしています。
+**実データ**: 必要なら元のデータから 2 クラスを取り出し、登録した特徴量から 2 つを選んで 2 次元にしています（Breast Cancer は元から 2 クラスです）。
 
 - **Palmer Penguins**: 南極のパーマー群島で測ったペンギンの体の大きさ。アデリーペンギン（class 0、青）とヒゲペンギン（class 1、橙）を見分けます（ジェンツーペンギンは使いません）。特徴量は、くちばしの長さ・高さ、フリッパー（翼）の長さ、体重。数値に欠損のある行は除いています。
 - **Iris**: Fisher (1936) のアヤメの花の測定値。Iris versicolor（class 0）と Iris virginica（class 1）を見分けます（setosa は使いません）。特徴量は、がく片と花弁の長さ・幅。
+- **Wine**: イタリアの同じ地域で、3 つの品種のブドウから作られたワインの化学分析の結果（scikit-learn 同梱）。品種 2（class 0、青）と品種 3（class 1、橙）のワインを見分けます（品種 1 は使いません）。13 個の特徴量のうち 6 つ（アルコール、リンゴ酸、フラバノイド、色の濃さ、色相、プロリン）を登録しています。単位は出典に明記がないので、軸には単位を付けていません。
+- **Breast Cancer**: ウィスコンシンの乳腺の腫瘤を細い針で吸引して採った細胞の画像から、細胞核の形や濃淡を数値にしたデータ（scikit-learn 同梱、569 件）。良性（357 件、class 0、青）と悪性（212 件、class 1、橙）を見分けます。30 個の特徴量のうち 8 つ（テクスチャ、面積、滑らかさ、凹点の平均と、半径、面積、滑らかさ、凹点の最大側 (worst)）を登録しています。「最大側 (worst)」は、1 枚の画像で大きい方から 3 つの値の平均です。単位は出典に明記がないので、軸には単位を付けていません。分類の練習用のデータで、診断に使うものではありません。悪性を見逃す誤りと、良性を悪性と誤る誤りは、正解率だけでは区別できません。
 
-実データを選ぶと、プレイグラウンドに「データについて」の欄が出ます。件数、class 0 / class 1 が元のどの種か、class 1 の割合、同じ座標に重なっている点の数（あれば）、出典が書いてあります。
+実データを選ぶと、プレイグラウンドに「データについて」の欄が出ます。件数、class 0 / class 1 が元のどの種（品種、良性・悪性）か、class 1 の割合、同じ座標に重なっている点の数（あれば）、出典が書いてあります。
 
 **標準化**: 「特徴量を標準化する」が効くのは、距離を使う k-NN と SVM だけです（交差検証では fold ごとに訓練側だけで標準化するので、検証データの情報は漏れません）。ほかのモデルでは、オンにしても標準化は適用されず、プレイグラウンドにその理由が表示されます。ロジスティック回帰と MLP は、モデルの中ですでに標準化しています。木ベース（決定木・ランダムフォレスト・勾配ブースティング）と LDA では、オンにしても結果はほとんど変わりません（特徴量ごとの拡大縮小で、数値の丸めによる違いを除いて結果が変わらないため）。Naive Bayes と QDA は、単位によって結果が変わることがあります（Naive Bayes は分散に足す微小な平滑化のため、QDA は reg_param = 0 でも絶対値で決まり、共分散の固有値が約 1e-4 以下になると学習に失敗するため。reg_param > 0 の QDA も単位に依存します）。この 2 つには標準化を適用していません。
 
@@ -141,7 +143,7 @@ data/
   generator.py          データセットの登録 (DATASETS) と DataConfig（ほかのモジュールはここから使う）
   specs.py              登録情報の型 (DatasetSpec, FeatureSpec)
   synthetic.py          合成データ（Moons / Circles / Linear Separable）
-  real_datasets.py      実データ（Palmer Penguins / Iris）の読み込み
+  real_datasets.py      実データ（Palmer Penguins / Iris / Wine / Breast Cancer）の読み込み
   real/                 同梱の penguins.csv と NOTICE
 models/
   base.py               BaseModel（共通インターフェース）・描画ヘルパー・レジストリ
@@ -192,5 +194,7 @@ docs/decisions.md       設計の決定の番号の索引（コードのコメ�
   - データの初出: Gorman KB, Williams TD, Fraser WR (2014). PLoS ONE 9(3):e90081. https://doi.org/10.1371/journal.pone.0090081
   - データは Dr. Kristen Gorman と Palmer Station Antarctica LTER（Long Term Ecological Research Network の一員）が収集・公開したものです。データ提供者は、データを公表する場合は Dr. Kristen Gorman に連絡するよう依頼しています（依頼であり、ライセンス上の義務ではありません）。
 - **Iris**（同梱せず、scikit-learn の `load_iris()` から読む）: Fisher, R.A. (1936). The use of multiple measurements in taxonomic problems. UCI Machine Learning Repository 版: R. A. Fisher, "Iris", 1936, https://doi.org/10.24432/C56C76（CC BY 4.0）。scikit-learn の版は、Fisher の論文に合わせて UCI 版の 2 点を訂正したものです（scikit-learn の版そのものの利用条件は明記されていません）。
+- **Wine**（同梱せず、scikit-learn の `load_wine()` から読む）: Aeberhard S, Forina M (1991). "Wine". UCI Machine Learning Repository, https://doi.org/10.24432/C5PC7J（CC BY 4.0）。元の所有者は Forina M et al., PARVUS, Institute of Pharmaceutical and Food Analysis and Technologies, Genoa, Italy。scikit-learn 同梱の版を使い、13 個の特徴量のうち 6 つ、3 クラスのうち 2 つを使います（scikit-learn の版そのものの利用条件は明記されていません）。
+- **Breast Cancer**（同梱せず、scikit-learn の `load_breast_cancer()` から読む）: Wolberg WH, Mangasarian OL, Street WN (1995). "Breast Cancer Wisconsin (Diagnostic)". UCI Machine Learning Repository, https://doi.org/10.24432/C5DW2B（CC BY 4.0）。Street WN, Wolberg WH, Mangasarian OL (1993). Nuclear feature extraction for breast tumor diagnosis. IS&T/SPIE 1905:861-870。scikit-learn 同梱の版を使い、30 個の特徴量のうち 8 つを使います（scikit-learn の版そのものの利用条件は明記されていません）。
 
 実行時にネットワークへはアクセスしません。
