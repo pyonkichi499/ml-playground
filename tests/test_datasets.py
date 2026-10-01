@@ -50,7 +50,10 @@ def _digest(*arrays: np.ndarray) -> str:
 
 # ---- 登録の形 ---------------------------------------------------------------
 def test_menu_order_and_names():
-    assert list(DATASETS) == ["Moons", "Circles", "Linear Separable", "Palmer Penguins", "Iris"]
+    # 並び = メニューの順。実データを足すときは、末尾に足し、ここを直す (README・test_real_datasets.py も)
+    assert list(DATASETS) == [
+        "Moons", "Circles", "Linear Separable", "Palmer Penguins", "Iris", "Wine", "Breast Cancer",
+    ]
     assert all(name == spec.name for name, spec in DATASETS.items())
 
 
@@ -122,7 +125,7 @@ def test_network_guard_is_active():
 
 def test_every_dataset_loads_uncached_without_network():
     # 実データの読み込みはキャッシュされるので、先に捨ててから読む (キャッシュ済みだと何も確かめずに通ってしまう)
-    assert len(REAL) >= 2
+    assert {"Palmer Penguins", "Iris", "Wine", "Breast Cancer"} <= set(REAL)
     for name in REAL:
         loader = DATASETS[name].loader
         assert hasattr(loader, "cache_clear"), f"{name}: loader is expected to be functools.cache'd"
@@ -313,6 +316,24 @@ def test_duplicate_stats_pinned_on_full_data(name, features, expected):
     assert duplicate_stats(X, y) == expected
 
 
+@pytest.mark.parametrize("name", ["Wine", "Breast Cancer"])
+def test_duplicate_stats_of_stage2_presets(name):
+    # 第 2 段階の実データの presets (3 組) は、どれも同じ座標の点が無い (説明カードの重複の行が出ない)。
+    # 重複のある組 (例: Wine の hue × proline は (4, 2, 2)) は presets に入れない。
+    # 期待値は (0, 0, 0) の 1 種類なので、presets が 3 組であること自体も確かめる (数え漏れで空振りしないように)
+    presets = DATASETS[name].presets
+    assert len(presets) == 3
+    for features in presets:
+        X, _, y, _ = DataConfig(name, None, None, 0, 0.0, features=features).load()
+        assert duplicate_stats(X, y) == DuplicateStats(0, 0, 0), features
+
+
+def test_duplicate_stats_is_not_vacuous_on_wine():
+    # 上の (0, 0, 0) の確認が「常に 0 を返す実装」でも通らないよう、重複のある Wine の組で非 0 を確かめる
+    X, _, y, _ = DataConfig("Wine", None, None, 0, 0.0, features=("hue", "proline")).load()
+    assert duplicate_stats(X, y) == DuplicateStats(4, 2, 2)
+
+
 # ---- F: 不均衡はデータから導く ------------------------------------------------
 def test_class_balance_and_imbalance():
     assert class_balance(np.array([0, 0, 0, 1])) == 0.25
@@ -325,7 +346,11 @@ def test_class_balance_and_imbalance():
     assert not is_imbalanced(np.array([0] * 6 + [1] * 4))  # 0.4 ちょうどは不均衡としない
 
 
-@pytest.mark.parametrize(("name", "imbalanced"), [("Palmer Penguins", True), ("Iris", False), ("Moons", False)])
+@pytest.mark.parametrize(("name", "imbalanced"), [
+    ("Palmer Penguins", True), ("Iris", False), ("Moons", False),
+    ("Wine", False),  # 少数派 0.403 は閾値 0.4 のすぐ上
+    ("Breast Cancer", True),  # 少数派 = 悪性 (class 1) 0.373
+])
 def test_imbalance_of_registered_data(name, imbalanced):
     _, _, y, _ = DataConfig(name, 200, 0.2, 42, 0.0).load()
     assert is_imbalanced(y) is imbalanced

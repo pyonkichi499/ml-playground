@@ -3,7 +3,7 @@
 他のモジュールは `from data.generator import ...` でここから使う (AD-14.9 (1))。中身は次に分かれている。
 - data/specs.py: 登録情報の型 (DatasetSpec, FeatureSpec)
 - data/synthetic.py: 合成データ (Moons / Circles / Linear Separable)
-- data/real_datasets.py: 実データ (Palmer Penguins / Iris) の読み込み
+- data/real_datasets.py: 実データ (Palmer Penguins / Iris / Wine / Breast Cancer) の読み込み
 
 streamlit には依存させないこと (探索エンジンやテストからも使う)。実行時にネットワークへはアクセスしない。
 """
@@ -13,7 +13,7 @@ from dataclasses import dataclass, replace
 import numpy as np
 from sklearn.model_selection import train_test_split
 
-from data.real_datasets import IRIS, PENGUINS
+from data.real_datasets import BREAST_CANCER, IRIS, PENGUINS, WINE
 from data.specs import TOY_FEATURES, Dataset, DatasetSpec, FeatureSpec, GeneratorFn, LoaderFn
 from data.synthetic import CIRCLES, LINEAR, MOONS, make_circles_data, make_linear_data, make_moons_data
 
@@ -24,7 +24,7 @@ __all__ = [
 ]
 
 #: メニューの順 (AD-14.1)
-DATASETS: dict[str, DatasetSpec] = {spec.name: spec for spec in (MOONS, CIRCLES, LINEAR, PENGUINS, IRIS)}
+DATASETS: dict[str, DatasetSpec] = {spec.name: spec for spec in (MOONS, CIRCLES, LINEAR, PENGUINS, IRIS, WINE, BREAST_CANCER)}
 
 
 def generate(name: str, n_samples: int, noise: float, random_state: int) -> Dataset:
