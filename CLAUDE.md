@@ -15,11 +15,12 @@ Python 3.14（uv で管理）。動作確認したバージョン: streamlit 1.6
 ### 依存の更新（lock の更新は承認制）
 `uv.lock` を更新するときは、承認を得てから、次の手順で行う。
 0. lock を更新して `uv sync` すると、:8501 の開発サーバーが使う `.venv` が入れ替わる。更新の前に、サーバーを使っている人へ知らせる（サーバーは止めない）。
-1. `uv lock --upgrade`（対象だけなら `--upgrade-package <名前>`。版を指定するなら `-P 'scikit-learn==1.9.2'`）を流し、`git diff uv.lock` で差分を確認する。上がった版の一覧を記録に残す。`uv lock` は `.venv` を変えないので、テストの前に `uv sync --locked` が要る。
-2. 警告をエラーにした全体テストを流す: `uv run pytest -q -W error::FutureWarning -W error::DeprecationWarning -W error::PendingDeprecationWarning`。この実行は、探索の CV の経路の非推奨を検出できない（`tuning/evaluate.py` が警告を無視し、並列のワーカーは親のフィルターを引き継がないため）。その経路は、`cross_validate` に直接警告をかけるテストで確かめる。落ちたら、原因（非推奨、警告、数値の変化）を直すか、更新を見送る。
-3. 数値を含む文書とテスト（実験ガイド `docs/experiments.md`、`tests/test_models_teaching_claims.py`、`tests/scale/test_teaching_claims_multiseed.py`）を、担当者が再現する。文書の数値が変わったら、文書を直す。
-4. 1〜3 が済んだら、コミットの列を通す。冒頭の「動作確認したバージョン」も、上がったものに直す。
-- 軽い手順（パッチ版だけが上がる場合。例: 1.9.1 → 1.9.2）: 手順 2 が通れば、手順 3（数値の再現）は省いてよい。手順 1 の差分の確認と、承認は省かない。マイナー版以上（1.9 → 1.10 など）は、手順 1〜4 をすべて行う。
+1. 更新の前後に、探索の CV の警告テスト（`tests/test_tuning_engine.py` の、FutureWarning・DeprecationWarning をエラーにするテスト）を最初に流し、隠れた非推奨がないか確かめる。更新の前に流した結果を、基準線にする。
+2. `uv lock --upgrade`（対象だけなら `--upgrade-package <名前>`。版を指定するなら `-P 'scikit-learn==1.9.2'`）を流し、`git diff uv.lock` で差分を確認する。上がった版の一覧を記録に残す。`uv lock` は `.venv` を変えないので、テストの前に `uv sync --locked` が要る。
+3. 警告をエラーにした全体テストを流す: `uv run pytest -q -W error::FutureWarning -W error::DeprecationWarning -W error::PendingDeprecationWarning`。この実行は、探索の CV の経路の非推奨を検出できない（`tuning/evaluate.py` が警告を無視し、並列のワーカーは親のフィルターを引き継がないため）。その経路は、`cross_validate` に直接警告をかけるテストで確かめる。落ちたら、原因（非推奨、警告、数値の変化）を直すか、更新を見送る。
+4. 数値を含む文書とテスト（実験ガイド `docs/experiments.md`、`tests/test_models_teaching_claims.py`、`tests/scale/test_teaching_claims_multiseed.py`）を、担当者が再現する。文書の数値が変わったら、文書を直す。
+5. 1〜4 が済んだら、コミットの列を通す。冒頭の「動作確認したバージョン」も、上がったものに直す。
+- 軽い手順（パッチ版だけが上がる場合。例: 1.9.1 → 1.9.2）: 手順 1 と 3 が通れば、手順 4（数値の再現）は省いてよい。手順 2 の差分の確認と、承認は省かない。マイナー版以上（1.9 → 1.10 など）は、手順 1〜5 をすべて行う。
 - 全体テストは、上の「コマンド」のとおり担当者が排他制御つきのスクリプトで流す。timing と scale は `-m timing` / `-m scale` を付けて別に流す。
 
 ## どこに何があるか
