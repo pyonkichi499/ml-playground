@@ -109,8 +109,10 @@ class GaussianModel(BaseModel):
             if {**self.default_params, **params}["variant"] != "qda" or match is None:
                 raise
             raise FitError(
-                f"クラス {match.group(1)} の点がほぼ一直線に並んでいて、QDA の楕円 (共分散) が推定できません。"
-                "共分散の正則化 (reg_param) を 0.05 以上にするか、ノイズを増やしてください。"
+                f"クラス {match.group(1)} の点がほぼ一直線に並んでいる (または、特徴量の値が小さすぎる) ため、"
+                "QDA の楕円 (共分散) が推定できません。"
+                "共分散の正則化 (reg_param) を 0.05 以上にするか、別の特徴量の組を選んでください "
+                "(合成データなら、ノイズを増やしても直ります)。"
             ) from exc
         # LDA (svd) が判定に使う共通共分散は「クラス内偏差の二乗和 / n」。covariance_ は事前確率で
         # 重み付けされているため、事前確率を手で変えると予測とずれる。楕円用に自前で計算しておく。
