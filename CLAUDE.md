@@ -1,7 +1,7 @@
 # CLAUDE.md
 
 2 次元のトイデータと実データ（Palmer Penguins、Iris）で、分類器とハイパーパラメータ探索を学ぶための Streamlit アプリ。
-Python 3.14（uv で管理）。固定しているバージョン: streamlit 1.64、scikit-learn 1.9、matplotlib 3.11、numpy 2.5、optuna 5.0、pytest 9（dev）。
+Python 3.14（uv で管理）。動作確認したバージョン: streamlit 1.64、scikit-learn 1.9、matplotlib 3.11、numpy 2.5、optuna 5.0、pytest 9（dev）。バージョンを固定しているのは `uv.lock`（パッチ版まで）で、`pyproject.toml` は下限（`>=`）だけを書く。文書やテストの数値は、この lock の版で測っている。
 
 ## コマンド（リポジトリのルートで実行する）
 - セットアップ: `uv sync`
@@ -10,7 +10,17 @@ Python 3.14（uv で管理）。固定しているバージョン: streamlit 1.6
 - 1 ファイル / 1 テストだけ: `uv run pytest tests/test_app_smoke.py -q`、`uv run pytest -q -k <expr>`
 - `pythonpath = ["."]` は pyproject で pytest 用にだけ設定している。pytest 以外で一時的なスクリプトを動かすときは `PYTHONPATH=. uv run python ...` を使う。
 - チームの運用では、全体テスト（`uv run pytest`）は担当者が排他制御つきのスクリプトでまとめて流す。各自は自分のテストファイルだけを流す。
-- 強い理由なしに `uv add` で依存を足してはならない。
+- 強い理由なしに `uv add` で依存を足してはならない。直接 import する依存は `pyproject.toml` に宣言する（推移的に入るものに頼らない。pandas・joblib は dependencies、scipy は dev に足すのは、この規則の例外として認められている）。`uv lock --upgrade` や、lock を作り直す操作も、承認なしに行ってはならない（lock は下の「依存の更新」の手順でだけ更新する）。`uv sync` と `uv run` は、lock が無い、または `pyproject.toml` と食い違うときに lock を自動で更新するので、lock のとおりに入れるには `uv sync --locked`（lock が古ければエラーで止まる）を使う（`--frozen` は lock を確認せずそのまま使う）。
+
+### 依存の更新（lock の更新は承認制）
+`uv.lock` を更新するときは、承認を得てから、次の手順で行う。
+0. lock を更新して `uv sync` すると、:8501 の開発サーバーが使う `.venv` が入れ替わる。更新の前に、サーバーを使っている人へ知らせる（サーバーは止めない）。
+1. `uv lock --upgrade`（対象だけなら `--upgrade-package <名前>`。版を指定するなら `-P 'scikit-learn==1.9.2'`）を流し、`git diff uv.lock` で差分を確認する。上がった版の一覧を記録に残す。`uv lock` は `.venv` を変えないので、テストの前に `uv sync --locked` が要る。
+2. 警告をエラーにした全体テストを流す: `uv run pytest -q -W error::FutureWarning -W error::DeprecationWarning -W error::PendingDeprecationWarning`。この実行は、探索の CV の経路の非推奨を検出できない（`tuning/evaluate.py` が警告を無視し、並列のワーカーは親のフィルターを引き継がないため）。その経路は、`cross_validate` に直接警告をかけるテストで確かめる。落ちたら、原因（非推奨、警告、数値の変化）を直すか、更新を見送る。
+3. 数値を含む文書とテスト（実験ガイド `docs/experiments.md`、`tests/test_models_teaching_claims.py`、`tests/scale/test_teaching_claims_multiseed.py`）を、担当者が再現する。文書の数値が変わったら、文書を直す。
+4. 1〜3 が済んだら、コミットの列を通す。冒頭の「動作確認したバージョン」も、上がったものに直す。
+- 軽い手順（パッチ版だけが上がる場合。例: 1.9.1 → 1.9.2）: 手順 2 が通れば、手順 3（数値の再現）は省いてよい。手順 1 の差分の確認と、承認は省かない。マイナー版以上（1.9 → 1.10 など）は、手順 1〜4 をすべて行う。
+- 全体テストは、上の「コマンド」のとおり担当者が排他制御つきのスクリプトで流す。timing と scale は `-m timing` / `-m scale` を付けて別に流す。
 
 ## どこに何があるか
 - `app.py` — エントリポイント。`st.navigation` のルーターで、共通のデータ設定サイドバーを描いてからページを実行する。
