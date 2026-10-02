@@ -300,6 +300,71 @@ def test_staged_scores_match_estimator():
     assert train_loss[-1] < train_loss[0] - 0.1
 
 
+def _independent_staged_log_loss(estimator, X, y) -> np.ndarray:
+    """プラグインの _staged_scores とは別の経路 (sklearn.metrics.log_loss を段階ごとに) で求めた損失。"""
+    from sklearn.metrics import log_loss
+
+    return np.array([log_loss(y, p[:, 1], labels=[0, 1]) for p in estimator.staged_predict_proba(X)])
+
+
+def _independent_cv_loss(estimator, X, y) -> np.ndarray:
+    """fold ごとの損失を全 fold で単純平均したもの (3-fold、shuffle、seed 0 は staged_cv と同じ分割の仕様)。"""
+    from sklearn.base import clone
+    from sklearn.model_selection import StratifiedKFold
+
+    folds = list(StratifiedKFold(CV_FOLDS, shuffle=True, random_state=0).split(X, y))
+    assert len(folds) == CV_FOLDS
+    per_fold = [_independent_staged_log_loss(clone(estimator).fit(X[a], y[a]), X[b], y[b]) for a, b in folds]
+    return np.mean(per_fold, axis=0)
+
+
+def _marker_points(ax, marker: str) -> list[tuple[float, float]]:
+    return [(float(line.get_xdata()[0]), float(line.get_ydata()[0])) for line in ax.get_lines() if line.get_marker() == marker]
+
+
+def test_cv_loss_is_the_mean_over_all_folds():
+    """CV の損失は「全 fold の平均」。別の経路 (sklearn の log_loss) で求めた値と各段階で一致する。
+
+    割る数が fold 数からずれる (先頭 fold だけの平均、など) と、値が一定の比でずれて落ちる。
+    """
+    ctx = _moons()
+    m = GradientBoostingModel().fit(ctx.X_train, ctx.y_train, {"n_estimators": 200})
+    expected = _independent_cv_loss(m.estimator, ctx.X_train, ctx.y_train)
+    cv = m.staged_cv()
+    np.testing.assert_allclose(cv.loss, expected, rtol=1e-6, atol=1e-9)
+    assert cv.chosen == int(np.argmin(expected)) + 1
+
+
+def test_chosen_and_test_best_tree_counts_are_exact_in_metrics_and_plot():
+    """指標の本数、▲ (テストで最良、参考)、★ (CV で選んだ本数) の位置が、別の経路で求めた本数と 1 本もずれない。
+
+    この設定は、テストで最良 (37 本) と CV で選ぶ本数 (47 本) が、どちらも端でなく、互いに違う。
+    どちらの印も 1 本ずれる (+1 でも -1 でも) と落ちる。
+    """
+    ctx = _moons()
+    m = GradientBoostingModel().fit(ctx.X_train, ctx.y_train, {"n_estimators": 200})
+    test_loss = _independent_staged_log_loss(m.estimator, ctx.X_test, ctx.y_test)
+    cv_loss = _independent_cv_loss(m.estimator, ctx.X_train, ctx.y_train)
+    test_best, cv_best = int(np.argmin(test_loss)) + 1, int(np.argmin(cv_loss)) + 1
+    assert (test_best, cv_best) == (37, 47)  # 前提: 端でなく、互いに違う (別の設定にしたときは、ここで気づく)
+    assert 1 < test_best < 200 and 1 < cv_best < 200 and test_best != cv_best
+
+    metrics = m.metrics(ctx)
+    assert metrics[TEST_KEY] == f"{test_best} 本"
+    assert metrics[CV_KEY] == f"{cv_best} 本"
+
+    fig = m.extra_plots(ctx)[0][1]
+    ax_loss = fig.axes[1]
+    (tri_x, tri_y), = _marker_points(ax_loss, "^")
+    (star_x, star_y), = _marker_points(ax_loss, "*")
+    assert tri_x == test_best and tri_y == pytest.approx(test_loss[test_best - 1], rel=1e-6)
+    assert star_x == cv_best and star_y == pytest.approx(cv_loss[cv_best - 1], rel=1e-6)
+    legend = _legend_texts(fig)
+    assert f"test best: {test_best} (reference only)" in legend
+    assert f"chosen by CV: {cv_best}" in legend
+    plt.close(fig)
+
+
 def _n_train(n_samples: int, test_size: float) -> int:
     return len(DataConfig("Moons", n_samples, 0.2, 42, test_size).load()[0])
 
