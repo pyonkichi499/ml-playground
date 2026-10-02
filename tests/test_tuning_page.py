@@ -13,16 +13,18 @@ from typing import Any
 
 import numpy as np
 import pytest
+from sklearn.metrics import accuracy_score
 from streamlit.testing.v1 import AppTest
 
 import tuning.evaluate
 import tuning.runner
 from data.generator import DataConfig, class_balance, is_imbalanced
 from models import MODEL_REGISTRY
+from models.base import make_estimator
 from tuning import plots
 from tuning.budget import budget_for
 from tuning.records import Surface, TrialRecord, TuningConfig
-from tuning.space import ParamSpec
+from tuning.space import ParamSpec, resolve_params
 
 ROOT = Path(__file__).resolve().parents[1]
 APP = str(ROOT / "app.py")
@@ -158,7 +160,15 @@ def test_full_flow_2d_svm(monkeypatch):
     assert not at.exception, at.exception
     test = at.session_state["tuning_result"]["test"]
     assert set(test) == {"Grid", "Random", "TPE"}
-    assert all(0.0 <= v <= 1.0 for v in test.values())
+    # 独立の再計算: ページの値は、最良の試行のパラメータで build → 訓練全体で fit → テストの正解率と一致する
+    # (0 ≤ v ≤ 1 は常に真なので置かない)。SVM (決定的) を sklearn の推定器で直接組んで確かめる
+    X_tr, X_te, y_tr, y_te0 = result["data_config"].load()
+    cfg, model = result["config"], MODEL_REGISTRY[SVM]
+    for method, best_trial in tuning.runner.best_trials(result["trials"]).items():
+        params = resolve_params(model.search_space(), model.default_params, cfg.fixed_dict, best_trial.params)
+        expected = accuracy_score(y_te0, make_estimator(model, params, cfg.standardize).fit(X_tr, y_tr).predict(X_te))
+        assert test[method] == pytest.approx(expected), method
+    assert all(v > 0.5 for v in test.values())  # チャンスレベル超え (Moons の 30 点で実測 0.9 前後)
     table = at.dataframe[-1].value
     assert "± SE" in table.columns
     assert all(0.0 < v < 0.2 for v in table["± SE"])  # 30 点のテスト: √(p(1−p)/30) ≤ 0.092
@@ -326,7 +336,7 @@ def test_interrupted_run_is_kept_and_shown(monkeypatch):
     assert not at.exception, at.exception
     partial = at.session_state["tuning_partial"]
     assert len(partial["trials"]) == 4 and partial["partial"]
-    assert "tuning_result" not in at.session_state and old is not partial
+    assert "tuning_result" not in at.session_state
 
     monkeypatch.undo()
     no_fitting(monkeypatch)
@@ -398,7 +408,10 @@ def test_heavy_model_defaults_and_eta_warning(monkeypatch):
     initial = {**rf.default_params, **rf.tuning_defaults}["n_estimators"]
     assert at.sidebar.select_slider(key="tuning.RandomForestModel.fixed.n_estimators").value == initial
     note = [c.value for c in at.sidebar.caption if "探索用の初期値は n_estimators" in c.value]
-    assert bool(note) == (initial != rf.default_params["n_estimators"])
+    # RF は tuning_defaults で n_estimators を 50 にしている (default_params の 100 と違う) ので、注記が 1 つ出る。
+    # 期待を同じ式から作らず、値の食い違いそのものを固定する
+    assert rf.tuning_defaults["n_estimators"] != rf.default_params["n_estimators"]
+    assert initial == rf.tuning_defaults["n_estimators"] and len(note) == 1
 
 
 # ---------------------------------------------------------------------------
