@@ -12,7 +12,7 @@ from model_checks import (
 
 from data.generator import DataConfig
 from models.base import MODEL_REGISTRY, PlotContext
-from models.random_forest import RandomForestModel
+from models.random_forest import N_TREE_PANELS, RandomForestModel
 
 pytestmark = [pytest.mark.filterwarnings("error::FutureWarning"), pytest.mark.filterwarnings("error::DeprecationWarning")]
 
@@ -237,6 +237,47 @@ def test_accuracy_vs_trees_lines_match_independent_computation():
     assert np.all(np.isnan(oob[: first - 1])) and np.isfinite(oob[first - 1])
     assert oob[-1] == pytest.approx(m.oob_accuracy)
     plt.close("all")
+
+
+@pytest.mark.parametrize("seed", [42, 0])
+def test_single_tree_line_uses_the_half_threshold_on_impure_leaves(seed):
+    """「single tree」の水平線は、木ごとに「確率 > 0.5」で分類したテスト正解率の平均。
+
+    既定 (深さ無制限・葉 1 点) の木は葉が純粋で確率が 0 か 1 だけなので、しきい値を 0.4 や 0.6 にしても値が動かない。
+    上のテストだけではしきい値のずれを捕まえられないので、葉が不純な木 (min_samples_leaf=10) で確かめる。
+    """
+    ctx = _moons(seed=seed)
+    m = RandomForestModel().fit(ctx.X_train, ctx.y_train, {"n_estimators": 25, "min_samples_leaf": 10})
+    per_tree = np.stack([t.predict_proba(ctx.X_test)[:, 1] for t in m.estimator.estimators_])
+    assert not set(np.unique(per_tree)) <= {0.0, 1.0}  # 前提: 葉が不純 (確率が 0 と 1 以外を含む)
+
+    def mean_accuracy(threshold):
+        return float(((per_tree > threshold) == ctx.y_test).mean(axis=1).mean())
+
+    expected = mean_accuracy(0.5)
+    # 前提: しきい値を 0.4 / 0.6 にすると値が変わる設定 (ずれを検出できる入力)
+    assert abs(mean_accuracy(0.6) - expected) > 0.005 and abs(mean_accuracy(0.4) - expected) > 0.005
+    fig = m._plot_accuracy_vs_trees(ctx)
+    line = _line(fig, "test (held out, reference only): single tree")
+    np.testing.assert_allclose(line.get_ydata(), [expected, expected], rtol=0, atol=1e-12)
+    plt.close(fig)
+
+
+@pytest.mark.parametrize("n_estimators", [3, 25])
+def test_tree_panels_are_numbered_from_one_and_forest_title_has_the_tree_count(n_estimators):
+    """個々の木のパネルは「tree #1」から順に、フォレストのパネルの題は木の本数 (1 本のときは単数形)。"""
+    ctx = _moons()
+    m = RandomForestModel().fit(ctx.X_train, ctx.y_train, {"n_estimators": n_estimators})
+    fig = m._plot_trees(ctx)
+    titles = [ax.get_title() for ax in fig.axes if ax.get_visible() and ax.get_title()]
+    shown = min(n_estimators, N_TREE_PANELS)
+    assert titles == [f"tree #{i}" for i in range(1, shown + 1)] + [f"forest (average of {n_estimators} trees)"]
+    plt.close(fig)
+    one = RandomForestModel().fit(ctx.X_train, ctx.y_train, {"n_estimators": 1})
+    fig = one._plot_trees(ctx)
+    titles = [ax.get_title() for ax in fig.axes if ax.get_visible() and ax.get_title()]
+    assert titles == ["tree #1", "forest (average of 1 tree)"]
+    plt.close(fig)
 
 
 def test_prefix_of_forest_equals_smaller_forest():
