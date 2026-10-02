@@ -68,7 +68,7 @@ def test_l1_makes_coefficients_exactly_zero():
     model = LogisticRegressionModel().fit(ctx.X_train, ctx.y_train, {"degree": 6, "C": 0.1, "penalty": "l1"})
     m = model.metrics(ctx)
     assert m["特徴量の数"] == 27
-    assert m["非ゼロ係数の数"] < 27
+    assert 0 < m["非ゼロ係数の数"] < 27  # 効かない係数が 0 になり (< 27)、全部は 0 にならない (0 <)。同じ主張の複数 seed 版は teaching_claims
     l2 = LogisticRegressionModel().fit(ctx.X_train, ctx.y_train, {"degree": 6, "C": 0.1, "penalty": "l2"})
     assert l2.metrics(ctx)["非ゼロ係数の数"] == 27
 
@@ -91,7 +91,7 @@ def test_coefficient_labels_match_features():
     plt.close("all")
 
 
-def test_sigmoid_plot_consistent_with_proba():
+def test_proba_is_sigmoid_of_decision_function():
     ctx = load_ctx("Linear Separable")
     model = LogisticRegressionModel().fit(ctx.X_train, ctx.y_train, {})
     z = model.estimator.decision_function(ctx.X_train)
@@ -219,7 +219,7 @@ def test_class_labels_in_figures():
 
 
 # ---- degree の help、係数図の軸と説明文、"exactly 0"、端に描いた点 ----
-def test_degree_help_does_not_name_x1_x2():
+def test_degree_help_wording_does_not_name_x1_x2():
     """degree の help は特徴量の名前を知らない (render_params は ctx を受け取らない) ので、x1, x2 と書かない。"""
     import inspect
 

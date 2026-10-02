@@ -75,16 +75,24 @@ def test_background_is_computed_through_pipeline():
     """背景とマージン線は、元の単位の格子を Pipeline に通した決定関数で描く (標準化した値を直接使わない)。"""
     ctx = _mixed_units_ctx()
     model = SVMModel().fit(ctx.X_train, ctx.y_train, {"kernel": "linear"}, standardize=True)
-    manual = model.final_estimator.decision_function(model.estimator[:-1].transform(ctx.X_test))
-    np.testing.assert_allclose(model.estimator.decision_function(ctx.X_test), manual)
     fig = model.plot_decision_boundary(ctx.X_train, ctx.y_train, ctx.X_test, ctx.y_test, resolution=40,
                                        bounds=ctx.bounds)
+    # 図に描かれた等高線 (元の単位の座標) の上で、Pipeline の決定関数が線の値 (0 と ±1) になっている。
+    # linear の決定関数は元の単位でもアフィンなので、格子の補間で描かれた線の上でも厳密に成り立つ。
+    # 標準化していない final_estimator に元の単位の格子を直接通して描くと、線の上の値が 0 / ±1 から大きくずれる
+    lines = [c for c in fig.axes[0].collections if getattr(c, "levels", None) is not None and len(c.levels) <= 2]
+    assert sorted(float(lv) for c in lines for lv in c.levels) == [-1.0, 0.0, 1.0]
+    for cs in lines:
+        for level, path in zip(cs.levels, cs.get_paths()):
+            assert len(path.vertices) > 10
+            values = model.estimator.decision_function(path.vertices)
+            np.testing.assert_allclose(values, float(level), atol=1e-6)
     x0, x1 = fig.axes[0].get_xlim()
     assert (x0, x1) == pytest.approx((ctx.bounds.x_min, ctx.bounds.x_max))  # 図は元の単位のまま
     plt.close("all")
 
 
-def test_gamma_help_depends_on_kernel():
+def test_gamma_help_wording_depends_on_kernel():
     """rbf では「影響が届く距離」、poly では「内積の倍率」として説明する (poly に rbf の説明を出さない)。"""
     from models.svm import GAMMA_HELP
 
@@ -465,16 +473,29 @@ def test_poly_kernel_formula_in_help_matches_the_model():
     assert "(gamma⟨x, x'⟩ + 1)^degree" in GAMMA_HELP["poly"]
 
 
-def test_unscaled_mixed_units_are_clearly_worse_for_every_gamma():
-    """rbf の help「標準化しないと…この画面の gamma (0.01〜100) では、どれも標準化したときよりはっきり悪くなる」。
-    Penguins の くちばしの長さ × 体重 (seed 0) で、標準化なしの最良 (全 gamma) ≤ 標準化あり (既定) − 0.1。"""
+def test_unscaled_bill_length_by_body_mass_is_worse_for_every_gamma_over_20_seeds():
+    """rbf の help「標準化しないと…この画面の gamma (0.01〜100) のどれでも標準化したときより悪くなることがある
+    (Penguins のくちばしの長さ × 体重では、20 シードすべてで悪くなる。特徴量の組によっては差が出ない)」。
+    Penguins の くちばしの長さ × 体重、seed 0〜19 (テストの分割) の全部で、標準化なしの最良 (全 gamma) の
+    テスト正解率が、標準化あり (既定) より低い。差の実測は最小 +0.076、中央値 +0.136、最大 +0.212 (2 つの別の
+    スクリプトで一致) なので、「はっきり」とは言わず、差が 0.05 以上あることまでを確かめる (seed により 0.1 未満がある)。
+    この主張は組による: 同じ Penguins でも、フリッパーの長さ × 体重は 10/20、くちばしの高さ × 体重は 2/20 の seed でしか
+    悪くならない (自分で測り直した。標準化なしの最良が標準化ありを厳密に下回る seed の数)。だから help は「ことがある」と
+    限定し、組の名前と 20 シードを添える。"""
     from model_grid import SCALE_CASE, real_ctx
 
     from models.svm import GAMMA_HELP, GAMMA_OPTIONS
 
-    ctx = real_ctx(*SCALE_CASE)
-    std = SVMModel().fit(ctx.X_train, ctx.y_train, {}, standardize=True).estimator.score(ctx.X_test, ctx.y_test)
-    raw = [SVMModel().fit(ctx.X_train, ctx.y_train, {"gamma": g}, standardize=False).estimator.score(ctx.X_test, ctx.y_test)
-           for g in GAMMA_OPTIONS]
-    assert max(raw) <= std - 0.1, (std, raw)
-    assert "どの gamma でも境界が崩れる" not in GAMMA_HELP["rbf"] and "はっきり悪くなる" in GAMMA_HELP["rbf"]
+    margins = []
+    for seed in range(20):
+        ctx = real_ctx(*SCALE_CASE, seed=seed)
+        std = SVMModel().fit(ctx.X_train, ctx.y_train, {}, standardize=True).estimator.score(ctx.X_test, ctx.y_test)
+        raw = [SVMModel().fit(ctx.X_train, ctx.y_train, {"gamma": g}, standardize=False).estimator.score(
+            ctx.X_test, ctx.y_test) for g in GAMMA_OPTIONS]
+        margins.append(std - max(raw))
+    assert min(margins) >= 0.05, margins
+    assert "どの gamma でも境界が崩れる" not in GAMMA_HELP["rbf"] and "はっきり" not in GAMMA_HELP["rbf"]
+    # help は測った範囲に絞る: 断定 (「どれも…悪くなる」) でなく「ことがある」、測った組と 20 シード、組による注記
+    help_ = GAMMA_HELP["rbf"]
+    assert "悪くなることがある" in help_ and "20 シードすべてで悪くなる" in help_
+    assert "くちばしの長さ × 体重" in help_ and "特徴量の組によっては差が出ない" in help_

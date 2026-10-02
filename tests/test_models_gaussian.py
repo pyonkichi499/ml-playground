@@ -181,7 +181,9 @@ def test_other_linalg_errors_pass_through_unchanged(monkeypatch, variant, messag
 
 @pytest.mark.parametrize("standardize", [False, True])
 def test_fit_accepts_standardize_keyword(standardize):
-    """base の契約 fit(..., *, standardize=False) を受ける。軸ごとのスケールに不変なので Pipeline にはしない。"""
+    """base の契約 fit(..., *, standardize=False) を受ける。Pipeline にはしない (scale_sensitive=False)。
+    LDA は軸ごとのスケールに不変だが、NB と QDA (reg_param > 0) は不変ではない。Pipeline にしない理由はそれではなく、
+    標準化を利用者に選ばせるモデルではない (scale_sensitive を宣言しない) から。"""
     ctx = load_ctx("Moons")
     model = GaussianModel().fit(ctx.X_train, ctx.y_train, {"variant": "lda"}, standardize=standardize)
     assert model.standardize is standardize
@@ -208,7 +210,7 @@ def test_density_plot_uses_feature_labels_and_names():
     plt.close("all")
 
 
-def test_reg_param_help_mentions_unit_dependence():
+def test_reg_param_help_wording_mentions_unit_dependence():
     """AD-14.4 (修正後): reg_param > 0 の QDA は単位に依存する (元の単位で単位行列に向けて縮める)。help に書いてあること。"""
     import inspect
 
@@ -250,13 +252,8 @@ def test_sigma_ellipses_contain_39_and_86_percent_in_2d(variant):
     式: 2 次元の正規分布でマハラノビス距離 ≤ s の確率 = χ²(2 自由度) の cdf(s²) = 1 − e^(−s²/2)。
     図に描いた楕円のパッチそのものに、推定した分布からの乱数 (固定のシード、20 万点。標準誤差 約 0.001) を当てて
     内側の割合を数え、式と ±0.01 で一致すること。捕まえるもの: 楕円の半径の取り違え (例: 直径と半径、σ と σ²)。"""
-    from scipy.stats import chi2
-
     from models.gaussian import _ellipse
 
-    for s_, expected in ((1, 0.393), (2, 0.865)):
-        assert 1 - np.exp(-s_**2 / 2) == pytest.approx(expected, abs=5e-4)
-        assert chi2(2).cdf(s_**2) == pytest.approx(expected, abs=5e-4)
     ctx = load_ctx("Moons", n_samples=300)
     params = {"variant": variant, **({"reg_param": 0.3} if variant == "qda" else {})}
     model = GaussianModel().fit(ctx.X_train, ctx.y_train, params)

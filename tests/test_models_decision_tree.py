@@ -67,6 +67,9 @@ def test_standardize_is_ignored(standardize):
     ctx = _named_ctx()
     model = DecisionTreeModel().fit(ctx.X_train, ctx.y_train, {}, standardize=standardize)
     assert model.estimator is model.final_estimator
+    # 「結果も同じ」: 標準化の有無で予測確率が完全に一致する (木は 1 軸の大小だけで割るので、単調な変換で不変)
+    plain = DecisionTreeModel().fit(ctx.X_train, ctx.y_train, {}, standardize=False)
+    np.testing.assert_array_equal(model.predict_proba(ctx.X_test), plain.predict_proba(ctx.X_test))
 
 
 @pytest.mark.timing

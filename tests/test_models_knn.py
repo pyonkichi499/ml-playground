@@ -103,7 +103,7 @@ def test_neighbourhood_shape_passes_through_kth_neighbour(p, shape_cls, test_siz
     else:
         verts = shape.get_xy()[:4]
         assert np.abs(verts - query).sum(axis=1) == pytest.approx(np.full(4, d.max()))
-    assert np.all(d <= d.max() + 1e-12)
+    assert np.all(d <= dist[0, -1] + 1e-12)
     # 近傍を囲むぎりぎりの半径 = k 番目の近傍までの距離
     assert d.max() == pytest.approx(dist[0, -1])
     plt.close("all")
@@ -533,6 +533,24 @@ def _penguins_scale_ctx():
     return real_ctx(*SCALE_CASE)
 
 
+def _dark_pixels_inside_and_outside_axes(fig, ax, artist) -> tuple[int, int]:
+    """artist だけを描いた図で、軸の枠の内側・外側にある「白でない画素」の数を返す。"""
+    for a in fig.axes:  # 他の要素は隠す (目盛りの文字などが外側の画素に混じらないように)
+        a.set_visible(a is ax)
+    ax.axis("off")
+    for child in ax.get_children():
+        child.set_visible(child is artist)
+    fig.canvas.draw()
+    img = np.asarray(fig.canvas.buffer_rgba())[..., :3]
+    dark = np.any(img < 200, axis=-1)
+    box = ax.get_window_extent()
+    h = img.shape[0]
+    col, row = np.meshgrid(np.arange(img.shape[1]), np.arange(h))
+    inside = (col >= np.floor(box.x0)) & (col <= np.ceil(box.x1)) & (h - 1 - row >= np.floor(box.y0)) & (
+        h - 1 - row <= np.ceil(box.y1))
+    return int((dark & inside).sum()), int((dark & ~inside).sum())
+
+
 def test_unscaled_penguins_inset_stays_inside_the_axes_and_note_explains_why():
     """Penguins の くちばしの長さ × 体重、標準化なし、既定の k-NN。近傍の半径が g の軸で決まり、横方向の
     半軸が mm の軸の幅を越える。拡大図の枠・接続線が図の外に出ないこと (拡大しても意味のない軸なので拡大図は
@@ -550,7 +568,9 @@ def test_unscaled_penguins_inset_stays_inside_the_axes_and_note_explains_why():
     assert len(ellipses) == 1
     cx, half = ellipses[0].center[0], ellipses[0].width / 2
     assert cx - half < x0 or cx + half > x1  # 切らなければ図の外へはみ出す設定であること
-    assert ellipses[0].get_clip_on() and ellipses[0].get_clip_box() is not None
+    inside, outside = _dark_pixels_inside_and_outside_axes(fig, ax, ellipses[0])
+    assert inside > 0  # 対照: 楕円は描かれている
+    assert outside == 0  # 軸の枠の外には 1 画素も出ない (clip_on / clip_box の属性ではなく、描かれた画素で確かめる)
     for line in ax.lines:  # 近傍への細線は、両端とも主図の範囲の内側 (訓練点どうしを結ぶだけなので外へ出ない)
         xs, ys = (np.asarray(v) for v in line.get_data())
         assert np.all((xs >= x0) & (xs <= x1)) and np.all((ys >= y0) & (ys <= y1))

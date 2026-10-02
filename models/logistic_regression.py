@@ -17,7 +17,6 @@ from tuning.space import ParamSpec
 
 C_OPTIONS = [0.001, 0.01, 0.1, 1.0, 10.0, 100.0, 1000.0, math.inf]
 PENALTY_LABELS = {"l2": "L2 (係数を全体的に小さく)", "l1": "L1 (不要な係数を 0 に)"}
-ZERO_TOL = 1e-8  # Models のコードでは使わない (数え方は zero_coefficients)。tests/scale の参照が切り替わったら削除する
 L1_MAX_ITER = 30
 # fit で記録した警告を外へ出し直すときの重複抑制用 ("default" 動作で同じ警告を何度も出さない)
 _REEMIT_REGISTRY: dict = {}
