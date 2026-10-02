@@ -49,7 +49,7 @@
 | AD-16 | メモリ枯渇の再発防止 | CLAUDE.md「テスト」、tuning/evaluate.py |
 | AD-17 | 大規模検証のテスト（scale） | CLAUDE.md「テスト」 |
 | AD-18 | この索引を置く（参照なし） | この文書 |
-| AD-19 | 探索の CV の非推奨の警告の見張り | tests/test_tuning_engine.py |
+| AD-19 | 探索の CV の非推奨の警告の見張り | tests/test_tuning_engine.py、CLAUDE.md「テスト」 |
 | R-10 | 選択肢が変わるウィジェットの key | common/data.py |
 | R1 | CV は BaseModel.fit を通らない | CLAUDE.md「アーキテクチャの規則」 |
 
@@ -290,7 +290,7 @@
 - 根拠: `evaluate()` が想定内の警告を抑制するので、scikit-learn の非推奨の警告は、探索の CV からは見えない。プレイグラウンドの `fit` は警告を局所的にしか抑制しないので、そちらでは見える。非推奨のまま放置すると、次の版で削除されたときに初めて壊れる（例: `LogisticRegression` の `penalty` は非推奨で、`CLAUDE.md` の落とし穴に残っている）。削除された引数は、警告ではなく `TypeError` になり、探索の CV では NaN とエラー文として現れる。この見張りが防ぐのは、削除の前の、警告の段階での見落としである。
 - 条件: 対象は FutureWarning と DeprecationWarning だけで、ConvergenceWarning は想定内として別に扱う（モデルの `expected_fit_warnings`）。データは小さく、シードを固定する。既定の実行に残す（時間はハング検出の緩い上限だけ）。依存（scikit-learn など）を更新するときは、このテストを最初に流す。
 - 現状: このテストは、足した時点で現行のコードで通り、コードの修正は要らなかった。
-- 今の規約の場所: tests/test_tuning_engine.py。CLAUDE.md への規約の追記は、別の単位（CLAUDE.md の追従）で行い、その単位が積まれたら、この項目と索引の場所に「CLAUDE.md「テスト」」を足す。
+- 今の規約の場所: tests/test_tuning_engine.py、CLAUDE.md「テスト」。
 
 ---
 
