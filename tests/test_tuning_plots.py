@@ -137,6 +137,8 @@ def test_fold_assignment_with_and_without_test():
     for X_test in (X[:10], X[:0]):
         fig = plots.plot_fold_assignment(X, y, X_test, make_cv(N_FOLDS, 0))
         assert isinstance(fig, Figure)
+        labels = [t.get_text() for t in fig.axes[0].get_legend().get_texts()]
+        assert ("test (held out)" in labels) == (len(X_test) > 0)  # テストがあるときだけテストの凡例が出る
         fig.savefig("/dev/null", format="png")
 
 
@@ -147,9 +149,10 @@ def test_validation_curve():
     assert ax.get_xscale() == "log"
     assert plots.TIE_LABEL in ax.get_legend_handles_labels()[1]
     # 網掛けの範囲は near_best_mask の点をすべて含む
-    spans = [p for p in ax.patches if p.get_label() == plots.TIE_LABEL or p.get_label().startswith("_")]
+    spans = [p for p in ax.patches if p.get_hatch()]  # 網掛けのパッチだけ (ラベル無しの別パッチを含めない)
     assert spans
     tie_x = curve.xs[plots.near_best_mask(curve)]
+    assert tie_x.size  # 空だと all([]) が真になってしまう
     covered = [any(p.get_x() <= x <= p.get_x() + p.get_width() for p in spans) for x in tie_x]
     assert all(covered)
     fig.savefig("/dev/null", format="png")
@@ -162,11 +165,16 @@ def test_boundary_thumbnails():
     fig = plots.plot_boundary_thumbnails(
         "決定木 (Decision Tree)", [("d=1", {"max_depth": 1}), ("d=5", {"max_depth": 5})], X, y, Bounds.from_data(X)
     )
-    assert len(fig.axes) == 2
+    assert [ax.get_title() for ax in fig.axes] == ["d=1", "d=5"]  # 渡した順にパネルが並ぶ
 
 
 def test_fold_scores():
     fig = plots.plot_fold_scores([[0.8, 0.9, 0.85], [0.9, 0.95, float("nan")]], ["a", "b"])
+    ax = fig.axes[0]
+    assert [t.get_text() for t in ax.get_yticklabels()] == ["a", "b"]
+    assert [len(c.get_offsets()) for c in ax.collections] == [3, 2]  # NaN の fold は点にならない
+    texts = [t.get_text() for t in ax.texts]
+    assert "mean 0.850" in texts[0] and "mean 0.925" in texts[1]
     fig.savefig("/dev/null", format="png")
 
 
@@ -465,11 +473,12 @@ def test_methods_distinguishable_without_colour():
         assert ax.get_title(loc="left").startswith(f"{m}:")  # 手法ごとに別パネル + 手法名の題
         body = [c for c in ax.collections if c.get_zorder() == 5]  # 本体 (白い縁の下地は zorder 4)
         edges = np.concatenate([c.get_edgecolors() for c in body])
-        startup = [t for t in trials if t.method == m and t.startup]
         assert len(edges) == 9
         # 早い試行の塗りは淡くても、縁は常に手法の本来の色 (失敗試行は無いので全点)
         np.testing.assert_allclose(edges, np.tile(to_rgba(plots.METHOD_COLORS[m]), (9, 1)))
-        assert len(startup) == (4 if m == "TPE" else 0)
+        # TPE のランダム期 (startup) の試行は白抜き (塗りが白)。ほかの手法・TPE の後の試行は手法の色の塗り
+        faces = np.concatenate([c.get_facecolors() for c in body])
+        assert int(np.all(faces[:, :3] == 1.0, axis=1).sum()) == (4 if m == "TPE" else 0)
     race = plots.plot_best_so_far(trials, METHODS)
     end_labels = [t.get_text().split()[0] for t in race.axes[0].texts if t.get_text().split()[0] in METHODS]
     assert sorted(end_labels) == sorted(METHODS)  # 右端に手法名のラベル
@@ -503,6 +512,7 @@ def test_text_uses_text_colours_and_marks_keep_method_colours():
 
     trials = make_trials(n=9)
     heat = plots.plot_search_heatmaps(make_surface(), trials, X_SPEC, Y_SPEC, METHODS)
+    n_checked = 0
     for ax, m in zip((a for a in heat.axes if a.get_label() != "<colorbar>"), METHODS):
         title = next(t for t in ax.findobj(Text) if t.get_text() == ax.get_title(loc="left"))
         assert to_rgba(title.get_color()) == to_rgba(plots.METHOD_TEXT_COLORS[m])
@@ -512,9 +522,14 @@ def test_text_uses_text_colours_and_marks_keep_method_colours():
         m = t.get_text().split()[0].rstrip(":")
         if m in METHODS:
             assert to_rgba(t.get_color()) == to_rgba(plots.METHOD_TEXT_COLORS[m])
+            n_checked += 1
+    assert n_checked >= 3  # 手法名の文字が 1 つも無いと空振りになる
+    n_lines = 0
     for ln in ax.lines:  # 線はマーカー用の色のまま
         if ln.get_label() in METHODS:
             assert to_rgba(ln.get_color()) == to_rgba(plots.METHOD_COLORS[ln.get_label()])
+            n_lines += 1
+    assert n_lines == 3
     best = {m: max((t for t in trials if t.method == m), key=lambda t: t.mean_cv) for m in METHODS}
     fig = plots.plot_cv_vs_test(best, {m: 0.9 for m in METHODS})
     fig.canvas.draw()
@@ -618,7 +633,11 @@ def test_boundary_thumbnails_standardize_and_feature_labels():
         buf = io.BytesIO()
         f.savefig(buf, format="png")
         pngs.append(buf.getvalue())
-    assert pngs[0] != pngs[1]  # 標準化の有無で境界が変わる
+    from matplotlib import image as mpimg
+
+    im0, im1 = (mpimg.imread(io.BytesIO(b)) for b in pngs)
+    assert im0.shape == im1.shape
+    assert np.mean(np.any(im0 != im1, axis=-1)) > 0.3  # 標準化の有無で境界が変わる (実測: 画素の 80% が違う)
 
 
 def test_fold_assignment_feature_labels_and_relative_padding():
