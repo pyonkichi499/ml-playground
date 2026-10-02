@@ -39,7 +39,7 @@ from models.svm import SVMModel
 # NONLINEAR はくっきり曲がる境界 (多項式・ReLU など)、CURVED は緩やかな 2 次曲線 (Moons の NB など) 用の下限
 EXACT_TOL = 1e-8
 NONLINEAR = 0.05
-CURVED = 1e-3  # 実測: 完全一致側 ≤ 3e-15、曲線側の最小は Moons の NB で 0.022 (QDA・Linear Separable は 0.17 以上)
+CURVED = 1e-2  # 実測: 完全一致側 ≤ 3e-15、曲線側の最小は Moons の NB で 0.022 (QDA・Linear Separable は 0.17 以上)。中間の 1e-2 に締めた
 N_GRID = 400
 # MLP で logit を取るときに使う確率の範囲と、その範囲に入った格子点の数の下限
 PROBA_MARGIN = 1e-6
@@ -358,6 +358,9 @@ def test_gb_train_loss_non_increasing(moons, learning_rate, max_depth):
                                                           "max_depth": max_depth, "subsample": 1.0})
     loss = staged_log_loss(model, X_train, y_train)
     assert np.diff(loss).max() <= 1e-12
+    # 「増えない」だけでは、学習率が ~0 で損失が全く動かないモデルでも通る。実際に下がることも見る
+    # (実測: 1 本目から 100 本目までの総低下は 0.149〜0.602。最小は学習率 1.0・深さ 8)
+    assert loss[0] - loss[-1] > 0.1, (learning_rate, max_depth, loss[0] - loss[-1])
 
 
 def test_gb_depth1_cannot_represent_feature_interactions(moons):
@@ -457,7 +460,9 @@ def test_svm_kernel_draws_curved_boundaries(dataset):
 # クラス内の共分散の固有値が約 1e-4 以下で LinAlgError (アプリでは FitError) になる」。
 # 以前の「NB / QDA も現実的な単位の範囲で不変」「極端な比 (≳1e5) で崩れる」は言い過ぎだったので、このテストは
 # NB と QDA について、測った倍率・データ・シードの範囲の一致だけを確かめ、不変とは言わない (下のテストの docstring)。
-# NB の差の原因が var_smoothing であることはレビューで実測して確認した (var_smoothing=0 で差は 1.95e-14 まで消える)。
+# NB の差の原因が var_smoothing であることは、GaussianNB(var_smoothing=0) を直接使った再現で確かめた (2026-09-30、Moons n=200
+# noise=0.3、シード 0〜19、下の 3 変換、格子 400 点: 確率の差の最大は 1.93e-14 / 3.3e-15 / 1.9e-15。var_smoothing 既定 (1e-9) では
+# 1.16e-4 / 7.2e-6 / 4.0e-9 (下の NB_PROBA_TOL のコメント))。
 # 「reg_param > 0 の QDA はスケーリングに不変ではない」、knn.py / svm.py の scale_sensitive = True。
 #
 # 不変性は standardize フラグでは確かめられない (木や Gaussian には効かないので自明に通る)。
@@ -471,18 +476,31 @@ SCALINGS = {
     "unit_change": (np.array([10.0, 1000.0]), np.array([-5.0, 250.0])),
     "standardize": None,  # StandardScaler (訓練データで fit)
 }
+# AD-14.4 が「拡大縮小で結果が変わらない」と言うのは決定木と LDA だけ (tests/scale の名前と揃える)
 SCALE_INVARIANT = {
     "decision_tree": (DecisionTreeModel, {"max_depth": None}),
+    "lda": (GaussianModel, {"variant": "lda"}),
+}
+# 測った範囲 (下のテストの docstring の条件) では予測が一致した、というだけのモデル。不変とは言わない
+SCALE_UNCHANGED_IN_MEASURED_RANGE = {
     "random_forest": (RandomForestModel, {"n_estimators": 10}),
     "gradient_boosting": (GradientBoostingModel, {"n_estimators": 30}),
     "naive_bayes": (GaussianModel, {"variant": "nb"}),
-    "lda": (GaussianModel, {"variant": "lda"}),
     "qda": (GaussianModel, {"variant": "qda", "reg_param": 0.0}),
 }
+SCALE_CHECKED = {**SCALE_INVARIANT, **SCALE_UNCHANGED_IN_MEASURED_RANGE}
 SCALE_SENSITIVE = {"knn": (KNNModel, {}), "svm": (SVMModel, {})}
 # 木: 格子点がちょうど閾値に乗ると浮動小数点の丸めで揺れうるので、一致率で見る
 TREE_MIN_AGREEMENT = 0.999
 TREE_PROBA_TOL = 1e-12
+
+
+def test_tree_agreement_threshold_means_zero_mismatches():
+    """TREE_MIN_AGREEMENT = 0.999 は N_GRID = 400 の格子では「食い違い 0 点」と等価 (400 × 0.001 = 0.4 点 < 1)。
+    格子点を増やすと 1 点以上の食い違いを黙って許すので、そのときはここで落として気づく。"""
+    assert N_GRID * (1 - TREE_MIN_AGREEMENT) < 1
+
+
 LDA_QDA_PROBA_TOL = 1e-9  # 実測 約 1e-15 (固定データ)、シード 20 通りの最大でも 2e-14
 # NB: 判定は「測った倍率で予測クラスが全点で一致」まで。NB は単位で変わりうる (AD-14.4: var_smoothing = 1e-9 × 全特徴量の
 # 最大分散を各分散に足すため。影響は分散の比に比例する) ので、不変とは言わず、下の 3 通りの変換・Moons (n=200、noise=0.3)・
@@ -493,8 +511,9 @@ LDA_QDA_PROBA_TOL = 1e-9  # 実測 約 1e-15 (固定データ)、シード 20 �
 #   このテストの固定データ (シード 0) では、それぞれ 8.7e-5 / 5.4e-6 / 1.9e-9。予測クラスは 20 通り × 3 変換で全点一致。
 # seed 0 だけの実測で 1e-4 と決めると 20 通りのうち一部が境界を超える。許容 1e-3 は、最大 1.16e-4 の約 8 倍
 NB_PROBA_TOL = 1e-3
-# 「変わる」側の判定: 予測クラスの一致率がこれ未満 (実測: KNN 0.77〜0.95、SVM 0.57〜0.96)
-CHANGED_MAX_AGREEMENT = 0.99
+# 「変わる」側の判定: 予測クラスの一致率がこれ未満 (実測、Moons シード 0・3 変換: KNN 0.70〜0.95、SVM 0.51〜0.96、
+# reg_param=0.3 の QDA 0.80〜0.89)
+CHANGED_MAX_AGREEMENT = 0.98  # 実測の最大 0.9625 (SVM の標準化) と、変わらない側の 1.0 の間
 
 
 def scaling(name: str, X_train: np.ndarray):
@@ -517,17 +536,20 @@ def fit_raw_and_scaled(model_cls, params, name, data, standardize=False):
 
 
 @pytest.mark.parametrize("name", list(SCALINGS))
-@pytest.mark.parametrize("model_key", list(SCALE_INVARIANT))
+@pytest.mark.parametrize("model_key", list(SCALE_CHECKED))
 def test_predictions_keep_under_measured_rescalings(moons, model_key, name):
     """AD-14.4 (訂正後):「特徴量ごとの拡大縮小で結果が変わらない (数値の誤差の範囲) と言えるのは決定木と LDA だけ。
     NB は var_smoothing のため単位で予測クラスも変わりうる。QDA (reg_param = 0) は絶対値で決まり、固有値が約 1e-4 以下で失敗する」。
     このテストは、その主張のうち「測った範囲」だけを確かめる。Moons (n=200、noise=0.3、シード 0)・格子 400 点・3 通りの変換
     (下の SCALINGS: ×1:×400 + 平行移動、×10:×1000 + 平行移動、標準化) で、元のデータの予測と変換後の予測が一致する。
-      - 決定木 (と RF / 勾配ブースティング)・LDA: 拡大縮小で不変 (木は完全一致、LDA は確率の差 約 1e-15)。
-      - NB・QDA (reg_param = 0): 上の条件の範囲でだけ予測クラスが一致する。NB の確率の差は最大 8.7e-5 (この固定データ)、
-        シード 20 通りで 1.2e-4 弱。QDA は約 1e-14 以下。これ以外の倍率・データ・シードでは言えず、範囲外の倍率では
-        NB の予測クラスが変わり、QDA は失敗しうる (テストしない)。"""
-    model_cls, params = SCALE_INVARIANT[model_key]
+      - 決定木・LDA (SCALE_INVARIANT): 拡大縮小で不変。決定木は完全一致。LDA の確率の差は、固定データ (シード 0) で
+        3.6e-15 以下、シード 20 通りの最大で 1.8e-14。
+      - RF・勾配ブースティング・NB・QDA (reg_param = 0) (SCALE_UNCHANGED_IN_MEASURED_RANGE): 上の条件の範囲でだけ予測が一致する
+        (不変とは言わない。Penguins 実データでは RF・勾配ブースティングが 1〜数点変わる)。RF・勾配ブースティングはこの範囲で完全一致。
+        NB の確率の差は固定データで最大 8.7e-5、シード 20 通りの最大で 1.16e-4。QDA の確率の差は固定データで 3.6e-15 以下、
+        シード 20 通りの最大で 2.0e-14。これ以外の倍率・データ・シードでは言えず、範囲外の倍率では NB の予測クラスが変わり、
+        QDA は失敗しうる (テストしない)。"""
+    model_cls, params = SCALE_CHECKED[model_key]
     raw, scaled, grid, grid_t = fit_raw_and_scaled(model_cls, params, name, moons)
     assert not model_cls.scale_sensitive
     agreement = float(np.mean(raw.predict(grid) == scaled.predict(grid_t)))
@@ -659,8 +681,8 @@ def test_knn_distance_train_accuracy_with_identical_coordinates(case):
         assert M <= int(wrong.sum()) <= P - M, (case, k, M, int(wrong.sum()), P)
         if k >= max_group:
             assert int(wrong.sum()) == expected_errors, (case, k, int(wrong.sum()), expected_errors)
-    if M > 0:
-        assert expected_errors > 0  # 訓練正解率は 1.0 にならない (Iris seed 0 では 1 − 1/70)
+    # (モデルの検査は上の M <= wrong の assert が担う。expected_errors は count_conflicts が M と同じ群から数えるので、
+    #  M > 0 なら定義上 > 0 になる。以前ここにあった assert expected_errors > 0 はヘルパの整合の確認にすぎないので外した)
 
     # タイトル・キャプションの n (P は k によらないので、どの k の図でも同じ)
     ctx = PlotContext.build(X_train, y_train, X_test, y_test, spec=config.spec(), features=config.normalized().features)
