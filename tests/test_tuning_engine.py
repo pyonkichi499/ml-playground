@@ -97,7 +97,6 @@ def test_budgets():
     # AD-11: 既定の試行回数 (上限は据え置き、既定は上限以下)
     assert {k: b.default_trials for k, b in BUDGETS.items()} == {"low": 25, "medium": 16, "high": 9}
     assert {k: b.max_trials for k, b in BUDGETS.items()} == {"low": 49, "medium": 25, "high": 16}
-    assert all(1 <= b.default_trials <= b.max_trials for b in BUDGETS.values())
 
 
 # ---------------------------------------------------------------- searchers
@@ -821,7 +820,8 @@ def test_run_search_and_test_scores_use_config_standardize(data):
                              cv=make_cv(5, cfg.seed), scoring="accuracy")
         np.testing.assert_allclose(t.cv_scores, ref["test_score"])
     raw = list(run_search(replace(cfg, standardize=False), X, y_tr))
-    assert [t.cv_scores for t in raw] != [t.cv_scores for t in trials]  # 尺度のずれたデータでは結果が変わる
+    # 尺度のずれたデータでは結果が大きく変わる (固定シードでの実測: 標準化なし CV 平均 0.52、あり 0.82〜0.88)
+    assert min(np.mean(t.cv_scores) for t in trials) - max(np.mean(t.cv_scores) for t in raw) > 0.2
     best = best_trials(trials)
     scores = test_scores(cfg, best, X, y_tr, Xt, y_te)
     params = resolve_params(cls.search_space(), cls.default_params, cfg.fixed_dict, best["Grid"].params)
@@ -855,7 +855,8 @@ def test_expected_evaluations_accounts_for_memo_on_int_axes(data):
     # 実際の探索の重複除去後の評価数とおおむね一致 (Random/TPE の乱数による揺れはある)
     trials = list(run_search(tiny, X, y))
     uniq = len({memo_key(t.params) for t in trials})
-    assert abs(uniq - e) <= 4
+    # 固定シード (0) での実測: 期待 15.6 に対し重複除去後 13 (差 2.6)。許容は 3.5
+    assert abs(uniq - e) <= 3.5
     probs = runner._int_probabilities(spec(DT, "min_samples_leaf"))
     assert sum(probs.values()) == pytest.approx(1.0) and probs[1] > probs[50]  # log: 小さい値ほど出やすい
 
@@ -871,3 +872,98 @@ def test_measure_eval_seconds_is_stable_across_runs(data):
     ts = [measure_eval_seconds(cfg, X, y) for _ in range(6)]
     spread = (max(ts) - min(ts)) / float(np.median(ts))
     assert spread <= 0.15, f"t over 6 runs {[round(t, 4) for t in ts]} spread {spread:.0%} ({_load_average()})"
+
+
+# ---------------------------------------------------------------- 警告 (F-1)
+def _small_xy():
+    X, _, y, _ = DataConfig("Moons", 80, 0.3, 0, 0.0).load()
+    return X, y
+
+
+@pytest.mark.parametrize("model_name", sorted(MODEL_REGISTRY))
+def test_cv_path_raises_no_deprecation_warnings(model_name):
+    """探索の CV の経路 (make_estimator の Pipeline・clone・StratifiedKFold・scoring・return_train_score) が、
+    FutureWarning / DeprecationWarning を出さない。evaluate() は警告を握りつぶすので、cross_validate を直接呼んで確かめる。"""
+    import warnings
+
+    from sklearn.model_selection import cross_validate
+
+    from models.base import make_estimator
+
+    cls = MODEL_REGISTRY[model_name]
+    X, y = _small_xy()
+    for standardize in ((False, True) if cls.scale_sensitive else (False,)):
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")  # 想定内の ConvergenceWarning などは対象外
+            warnings.simplefilter("error", FutureWarning)
+            warnings.simplefilter("error", DeprecationWarning)
+            est = make_estimator(cls, dict(cls.default_params), standardize)  # 推定器の組み立ても囲みの中
+            res = cross_validate(est, X, y, cv=make_cv(3, 0), scoring="accuracy", return_train_score=True,
+                                 error_score="raise")
+        assert len(res["test_score"]) == 3 and len(res["train_score"]) == 3
+
+
+def test_deprecation_guard_detects_a_fake_warning():
+    """負の対照: 推定器が FutureWarning を出すと、上のテストと同じ囲みで失敗する (囲みが空振りしていない)。"""
+    import warnings
+
+    from sklearn.base import BaseEstimator, ClassifierMixin
+    from sklearn.model_selection import cross_validate
+
+    class Noisy(ClassifierMixin, BaseEstimator):
+        def fit(self, X, y):
+            warnings.warn("fake", FutureWarning)
+            self.classes_ = np.unique(y)
+            return self
+
+        def predict(self, X):
+            return np.full(len(X), self.classes_[0])
+
+    X, y = _small_xy()
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore")
+        warnings.simplefilter("error", FutureWarning)
+        with pytest.raises(FutureWarning):
+            cross_validate(Noisy(), X, y, cv=make_cv(3, 0), scoring="accuracy", error_score="raise")
+
+
+def test_evaluate_swallows_expected_convergence_warning():
+    """MLP の ConvergenceWarning (想定内) は evaluate() の外へ漏れず、結果は error なしの EvalResult になる。"""
+    import warnings
+
+    from sklearn.exceptions import ConvergenceWarning
+    from sklearn.model_selection import cross_validate
+
+    from models.base import make_estimator
+
+    name = "ニューラルネットワーク (MLP)"
+    cls = MODEL_REGISTRY[name]
+    X, y = _small_xy()
+    params = {**cls.default_params, "max_iter": 5}
+    # 前提: この条件で、直接呼ぶと ConvergenceWarning が実際に出る
+    with warnings.catch_warnings(record=True) as direct:
+        warnings.simplefilter("always")
+        cross_validate(make_estimator(cls, params), X, y, cv=make_cv(3, 0), scoring="accuracy")
+    assert any(issubclass(w.category, ConvergenceWarning) for w in direct)
+    with warnings.catch_warnings(record=True) as leaked:
+        warnings.simplefilter("always")
+        res = evaluate(name, params, X, y, make_cv(3, 0), "accuracy")
+    assert not [w for w in leaked if issubclass(w.category, ConvergenceWarning)]
+    assert res.error is None and len(res.cv_scores) == 3 and not any(math.isnan(v) for v in res.cv_scores)
+
+
+def test_refit_and_test_scores_on_the_test_data_not_the_training_data(data):
+    """Q2-35: テストのスコアはテストデータで測る (訓練データで測る入れ違いを捕まえる)。
+    深い決定木は訓練データでは正解率 1.0 になるので、訓練で測ると 1.0 に張り付き、テストのラベルを反転しても変わらない。"""
+    from sklearn.tree import DecisionTreeClassifier
+
+    X_tr, X_te, y_tr, y_te = data
+    params = {"max_depth": 20, "criterion": "gini", "min_samples_leaf": 1}
+    est = DecisionTreeClassifier(random_state=0, **params).fit(X_tr, y_tr)
+    assert est.score(X_tr, y_tr) == 1.0  # 前提: 訓練で測ると 1.0
+    expected = est.score(X_te, y_te)
+    assert expected < 1.0
+    got = refit_and_test(DT, params, X_tr, y_tr, X_te, y_te, "accuracy")
+    assert got == pytest.approx(expected)
+    flipped = refit_and_test(DT, params, X_tr, y_tr, X_te, 1 - y_te, "accuracy")
+    assert flipped == pytest.approx(1.0 - expected)  # テストのラベルを反転すると正解率は 1 - 元の値
