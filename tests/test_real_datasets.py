@@ -196,6 +196,11 @@ def test_source_and_license_text():
     assert "10.24432/C5PC7J" in WINE.source and "10.24432/C5DW2B" in BREAST_CANCER.source
     for spec in (WINE, BREAST_CANCER):
         assert "CC BY 4.0" in spec.license and "scikit-learn" in spec.license
+    # 著者と年 (早乙女さんの変異の指摘: 年を変えても通ってはいけない)
+    assert "Aeberhard S, Forina M (1991)" in WINE.source
+    assert "Wolberg WH, Mangasarian OL, Street WN (1995)" in BREAST_CANCER.source
+    assert "Street WN, Wolberg WH, Mangasarian OL (1993)" in BREAST_CANCER.source
+    assert "IS&T/SPIE 1905:861-870" in BREAST_CANCER.source
     for spec in SPECS:  # Gorman 博士への連絡の依頼は NOTICE と README に書く (source には入れない)
         assert "contact" not in spec.source
 
@@ -298,6 +303,51 @@ def test_breast_cancer_malignant_is_class_1_independently_of_target_order():
     assert X[y == 1, 1].mean() > X[y == 0, 1].mean()
     # 少数派 (212 / 569 = 0.373) が class 1。不均衡と判定され、説明カードが「多数派を当てるだけで 0.63」と出す前提
     assert class_balance(y) == pytest.approx(212 / 569) and is_imbalanced(y)
+
+
+# ---- M: 説明文・日本語名が、データの実際の値・登録と食い違わないこと ----------------------------
+def test_breast_cancer_description_matches_counts_and_direction():
+    n_benign, n_malignant = (int(n) for n in np.bincount(load_breast_cancer().target)[::-1])  # target: 0 = malignant
+    n = n_benign + n_malignant
+    d = BREAST_CANCER.description_ja
+    assert (BREAST_CANCER.binary_class_names) == ("benign", "malignant")
+    assert f"{n} 件" in d and f"良性 ({n_benign} 件)" in d and f"悪性 ({n_malignant} 件)" in d
+    assert "悪性 (少数派) が class 1" in d  # 向き: class 1 = 悪性 (binary_class_names[1]) で、少数派
+    assert n_malignant < n_benign
+    assert "class 0" not in d.split("悪性 (少数派) が")[1][:12]  # 逆向き (良性が class 1) の書き方になっていない
+
+
+def test_wine_description_names_the_cultivars_and_sklearn_classes():
+    c0, c1 = WINE.binary_classes
+    n0, n1 = (name.split()[-1] for name in WINE.binary_class_names)  # "cultivar 2" -> "2"
+    d = WINE.description_ja
+    assert (n0, n1) == (str(c0 + 1), str(c1 + 1))  # 品種の番号 = sklearn の target + 1
+    assert f"品種 {n0} (scikit-learn の class_{c0}) と品種 {n1} (同 class_{c1})" in d
+    assert "品種 1 = class_0 は使わない" in d
+    assert set(WINE.binary_classes) | {0} == {0, 1, 2}
+
+
+#: 特徴量の概念ごとの日本語名の書き出し。英語 label と日本語名の取り違え (色相と色の濃さ、面積と半径など) を検出する
+_JA_CONCEPT = {
+    "alcohol": "アルコール", "malic_acid": "リンゴ酸", "flavanoids": "フラバノイド",
+    "color_intensity": "色の濃さ", "hue": "色相", "proline": "プロリン",
+    "texture": "テクスチャ", "area": "面積", "smoothness": "滑らかさ", "concave_points": "凹点", "radius": "半径",
+}
+
+
+@pytest.mark.parametrize("spec", [WINE, BREAST_CANCER], ids=lambda s: s.name)
+def test_japanese_names_match_the_english_labels(spec):
+    for f in spec.features:
+        stat, _, concept = f.key.partition("_") if f.key.startswith(("mean_", "worst_")) else ("", "", f.key)
+        assert f.label == f.key.replace("_", " ")  # 英語ラベルは key の "_" を空白にしたもの
+        ja = f.label_ja
+        assert ja.startswith(_JA_CONCEPT[concept]), (f.key, ja)
+        if stat == "mean":
+            assert ja.endswith("の平均"), ja
+        elif stat == "worst":
+            assert ja.endswith("の最大側 (worst)"), ja
+        else:
+            assert ja == _JA_CONCEPT[concept], ja
 
 
 # ---- L: scikit-learn 同梱データの固定 (同梱データが将来変わったら気づく) --------------------------
