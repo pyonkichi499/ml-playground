@@ -1,6 +1,6 @@
 # CLAUDE.md
 
-2 次元のトイデータと実データ（Palmer Penguins、Iris）で、分類器とハイパーパラメータ探索を学ぶための Streamlit アプリ。
+2 次元のトイデータと実データ（Palmer Penguins、Iris、Wine、Breast Cancer）で、分類器とハイパーパラメータ探索を学ぶための Streamlit アプリ。
 Python 3.14（uv で管理）。動作確認したバージョン: streamlit 1.64、scikit-learn 1.9、matplotlib 3.11、numpy 2.5、optuna 5.0、pytest 9（dev）。バージョンを固定しているのは `uv.lock`（パッチ版まで）で、`pyproject.toml` は下限（`>=`）だけを書く。文書やテストの数値は、この lock の版で測っている。
 
 ## コマンド（リポジトリのルートで実行する）
@@ -46,7 +46,7 @@ Python 3.14（uv で管理）。動作確認したバージョン: streamlit 1.6
 7. `metrics(ctx)` / `extra_plots(ctx)` は `PlotContext` を受け取る。`ctx.has_test == False` の場合も扱うこと。`extra_plots` は `(title, fig)` または `(title, fig, caption_markdown)` を返す。
 8. 速さを保つ: 訓練点 700 点で、学習 + 300×300 の境界 + 追加の図が ~1 秒を十分に下回ること。small multiples には 100×100 の格子（`plot_region_grid`）を使う。
 9. 想定内の警告は局所的に抑制し、決してグローバルに抑制しない。クラスで宣言する:
-   `expected_fit_warnings = ((ConvergenceWarning, ""),)` — (カテゴリ, メッセージの正規表現; "" = すべて) のタプルの並び。`BaseModel.fit` は `warnings.catch_warnings()` の中でだけ、これらを無視する。（探索の CV では `tuning/evaluate.py` が自分で警告を抑制する。）警告の中身を調べる必要がある `fit` の上書きは、代わりに自前の局所的な `catch_warnings()` を使ってよい。
+   `expected_fit_warnings = ((ConvergenceWarning, ""),)` — (カテゴリ, メッセージの正規表現; "" = すべて) のタプルの並び。`BaseModel.fit` は `warnings.catch_warnings()` の中でだけ、これらを無視する。（探索の CV では `tuning/evaluate.py` が自分で警告を抑制する。見張りは AD-19。）警告の中身を調べる必要がある `fit` の上書きは、代わりに自前の局所的な `catch_warnings()` を使ってよい。
 10. 決定境界の図にモデル固有の要素を描くときは、次を上書きする:
     `decorate_boundary_plot(self, ax, xx, yy, grid, *, ctx: PlotContext, thumbnail: bool)`。`ctx` には訓練・テストのデータと描画範囲が入っている。`thumbnail` は、`plot_decision_boundary` に既存の `ax` が渡されたとき（例: 探索ページのサムネイル）に True になる。そのときはインセットも凡例も描かず、注記は小さくするか省く。
 11. 任意の `tuning_defaults: ClassVar[dict]` は、*探索ページの固定値の初期値* だけを上書きする（例: RandomForest の `{"n_estimators": 50}`。1 回の評価を軽くするため）。`build()` の既定値やプレイグラウンドには決して影響しない。それらの唯一の情報源は `default_params` のまま。
@@ -54,8 +54,8 @@ Python 3.14（uv で管理）。動作確認したバージョン: streamlit 1.6
 
 ## データセットの規則
 1. 登録: `DatasetSpec` を作り（合成データは `data/synthetic.py` に `kind="synthetic", generator=...`、実データは `data/real_datasets.py` に `kind="real", loader=...`）、`data/generator.py` の `DATASETS` に並べる（並び = メニューの順）。メニューの並びを固定しているテスト（`tests/test_datasets.py`）も合わせて直す。アプリ側の変更は不要。
-2. 合成データの生成関数は `(n_samples, noise, random_state) -> (X, y)`（X は 2 列、y は {0, 1}）。実データのローダは `() -> (X, y)` で、全行・全特徴量（列は `features` の順）と元データのクラス番号を返す。2 クラスへの絞り込み（`binary_classes`）と 2 特徴量の選択は `DataConfig.load` が行う。
-3. 実データには `features`（`FeatureSpec(key, short, label, label_ja)`: 列名・識別子、式や表に使う英語の短い名前（`PlotContext.feature_names`）、単位つきの英語の軸ラベル（`PlotContext.feature_labels`）、UI の日本語の表示名。4 つとも必須）、`binary_classes`、`presets`（おすすめの組。`presets[0]` が既定）、`description_ja`、`source`、`license` を書く。
+2. 合成データの生成関数は `(n_samples, noise, random_state) -> (X, y)`（X は 2 列、y は {0, 1}）。実データのローダは `() -> (X, y)` で、全行と、`features` に登録した特徴量の列（列は `features` の順。元のデータに登録しない列があってもよい）と、元データのクラス番号を返す。2 クラスへの絞り込み（`binary_classes`）と 2 特徴量の選択は `DataConfig.load` が行う。
+3. 実データには `features`（`FeatureSpec(key, short, label, label_ja)`: 列名・識別子、式や表に使う英語の短い名前（`PlotContext.feature_names`）、単位つき（出典に単位が明記されているものだけ）の英語の軸ラベル（`PlotContext.feature_labels`）、UI の日本語の表示名。4 つとも必須）、`binary_classes`、`presets`（おすすめの組。`presets[0]` が既定）、`description_ja`、`source`、`license` を書く。`FeatureSpec.key` は、英小文字とアンダースコアの識別子にする（列名に空白があるときは、ローダで元の列名に写す）。元のデータの列が多いとき（例: Wine 13 列、Breast Cancer 30 列）は、教育に使う特徴量だけを登録する。登録の理由と、単位の有無（出典に単位が書かれていないものには単位を付けない）は、`description_ja` か `docs/decisions.md` に残す。
 4. 実行時にネットワークへアクセスしてはならない。実データは repo に同梱したファイル（`data/real/`、横に NOTICE を置き、テストで SHA-256 を照合する）か、scikit-learn 同梱のデータ（`load_*`）から読む。`fetch_*` や HTTP は使わない（`tests/test_datasets.py` が検査する）。`data/` は streamlit・`models`・`tuning` を import しない。
 5. キャッシュのキーと探索結果の同一性には `DataConfig.normalized()` を使う（実データでは `n_samples` / `noise` が消え、`features` が確定する）。
 6. 標準化: データ設定の「特徴量を標準化する」は、`scale_sensitive = True` のモデル（k-NN・SVM）にだけ効く。推定器は必ず `models.base.make_estimator(model, params, standardize)` で組む（`BaseModel.fit` と探索エンジンの両方が使う唯一の経路）。`standardize` かつ `scale_sensitive` なら、`StandardScaler` を前段に付けた Pipeline になる。Pipeline ごと交差検証するので、スケーラーは各 fold の訓練側だけで学習される。`scale_sensitive = True` のモデルは、`build()` に標準化を入れてはならない（二重になるため）。ロジスティック回帰や MLP のように、モデルの一部として常に標準化するものは `build()` の Pipeline に持ち、`scale_sensitive = False` のままにする。スケールに結果が左右される新しいモデルで、標準化を利用者に選ばせるものは `scale_sensitive = True` を宣言する。
@@ -122,4 +122,5 @@ Python 3.14（uv で管理）。動作確認したバージョン: streamlit 1.6
   - 流すときは必ず `-m scale` を付ける（例: `uv run pytest tests/scale -m scale`）。付けないと全件が deselect され、0 件のまま終わる（exit 5）。そのため「通った」ように見えてしまう。
 - テストでは探索エンジンの並列数が既定で 1（直列）になる（`tests/conftest.py` が `ML_PLAYGROUND_MAX_JOBS=1` を設定する。外から指定されていればそちらを尊重する）。並列の経路を確かめるテストだけが `n_jobs`（例: 2）を明示する。既定の実行のテストはデータを n ≤ 300 程度にとどめ、n=1000 での計時は timing に置く。
 - `tests/conftest.py` は Agg バックエンドを強制している。AppTest はスクリプトをスレッドで実行するため、GUI バックエンドだとプロセスが落ちることがある。`MPLBACKEND` の指定は不要。
+- 探索の CV の非推奨の警告（AD-19）: `tuning/evaluate.py` の `evaluate()` は想定内の警告を抑制するので、scikit-learn の非推奨（FutureWarning・DeprecationWarning）も隠れうる。`tests/test_tuning_engine.py` の `test_cv_path_raises_no_deprecation_warnings` が、`evaluate()` を通さず `make_estimator` + `cross_validate` を直接呼び、この 2 種類の警告をエラーにして、`MODEL_REGISTRY` の全モデルで確かめる（警告を出す推定器で失敗することを確かめる負の対照つき）。新しいモデルは登録すれば自動で対象になる。ConvergenceWarning のような想定内の警告は、モデルの `expected_fit_warnings` に宣言する（対象外）。scikit-learn など依存を更新するときは、このテストを最初に流す。データは小さく、シードは固定する。
 - 変更した図は PNG に描き出して、目で見ること。
