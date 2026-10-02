@@ -349,3 +349,46 @@ def test_points_beyond_limit_are_counted_and_drawn_at_the_edge():
     xs = np.concatenate([c.get_offsets()[:, 0] for c in ax.collections if len(c.get_offsets())])
     assert int(np.sum(np.isclose(np.abs(xs), limit))) == n
     plt.close("all")
+
+
+# ---- C-3 (変異テストで見つかった穴): 「ちょうど 0」の許容誤差、端の点の数え方 ----
+def test_tiny_but_nonzero_l2_coefficients_are_not_counted_as_exactly_zero():
+    """M32: 「ちょうど 0」は == 0.0 で数える。C が極端に小さい L2 は、係数がほぼ 0 (1e-3 未満) でもちょうど 0 ではない。
+    許容誤差 (1e-3、1e-5) で数える変異では、指標が 0 個の「非ゼロ」を返し、タイトルが出る。"""
+    ctx = load_ctx("Moons", n_samples=200)
+    model = LogisticRegressionModel().fit(ctx.X_train, ctx.y_train, {"degree": 3, "C": 1e-6, "penalty": "l2"})
+    coef = model.final_estimator.coef_.ravel()
+    assert 0 < np.abs(coef).max() < 1e-4 and np.all(coef != 0.0)  # 前提: 全部が小さく、どれもちょうど 0 ではない
+    assert model.metrics(ctx)["非ゼロ係数の数"] == coef.size
+    (_, fig, *_), _sig = model.extra_plots(ctx)
+    assert fig.axes[0].get_title() == ""  # 「exactly 0」のタイトルは出ない
+    assert not model.zero_coefficients(coef).any()
+    plt.close("all")
+
+
+def test_zero_coefficients_uses_exact_equality():
+    """zero_coefficients の定義そのもの (許容誤差が 1e-12 でも 1e-3 でも変わらない): ちょうど 0.0 だけが True。"""
+    coef = np.array([0.0, -0.0, 1e-300, -1e-12, 5e-4, 1e-3, 1.0])
+    np.testing.assert_array_equal(LogisticRegressionModel.zero_coefficients(coef),
+                                  [True, True, False, False, False, False, False])
+
+
+@pytest.mark.parametrize("dataset,degree,C", [("Moons", 3, 1.0), ("Circles", 3, 100.0)])
+def test_points_between_limit_and_limit_plus_one_are_counted_and_drawn_at_the_edge(dataset, degree, C):
+    """M33: タイトルの n は |z| > limit の点の数。limit と limit + 1 の間にも、limit - 1 と limit の間にも点がある例
+    (Moons 次数 3 C=1: limit 7.9 で 4 点、+1 なら 1 点、-1 なら 7 点) で、数えた点の数がずれる変異 (+1、-1) を捕まえる。"""
+    import re
+
+    ctx = load_ctx(dataset, n_samples=200)
+    model = LogisticRegressionModel().fit(ctx.X_train, ctx.y_train, {"degree": degree, "C": C})
+    _, (_, fig, *_) = model.extra_plots(ctx)
+    ax = fig.axes[0]
+    m = re.fullmatch(r"(\d+) points with \|z\| > ([\d.]+) are drawn at the edge", ax.get_title())
+    assert m, ax.get_title()
+    n, limit = int(m.group(1)), float(m.group(2))
+    z = np.abs(model.estimator.decision_function(ctx.X_train))
+    assert np.sum((z > limit) & (z <= limit + 1)) > 0 and np.sum((z > limit - 1) & (z <= limit)) > 0  # 前提
+    assert n == int(np.sum(z > limit))
+    xs = np.concatenate([c.get_offsets()[:, 0] for c in ax.collections if len(c.get_offsets())])
+    assert int(np.sum(np.isclose(np.abs(xs), limit))) == n
+    plt.close("all")

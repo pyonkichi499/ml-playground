@@ -625,3 +625,90 @@ def test_one_axis_note_only_when_one_axis_is_narrower_than_the_neighbourhood():
     for k, expected in ((5, 1), (25, 1), (50, 1), (76, 1), (77, None), (153, None)):
         m = KNNModel().fit(ctx.X_train, ctx.y_train, {"n_neighbors": k}, standardize=False)
         assert len(ctx.X_train) == 153 and m.one_axis_dominance() == expected, k
+
+
+# ---- C-3 (変異テストで見つかった穴): 拡大図の判定の幅、2k >= n の境目、同票、距離 0、CV のスケーラーの漏れ ----
+@pytest.mark.parametrize("k,has_inset", [(1, True), (9, True), (15, True), (25, False), (50, False)])
+def test_inset_is_drawn_only_when_the_neighbourhood_is_under_12_percent_of_the_axis(k, has_inset):
+    """拡大図の判定 INSET_THRESHOLD = 0.12: 近傍の範囲の半軸が図の幅・高さの 12% 未満のときだけ拡大図を添える。
+    Moons (n=200、seed 0、標準化なし) の実測: 境界ぎわの点の半軸 / 幅 の小さい方は k=15 で 0.103、k=25 で 0.124、
+    k=50 で 0.22。閾値をこの間から外す (0.09、0.14、常に付ける 10.0、付けない 0) と、どれかの k で落ちる。"""
+    ctx = load_ctx("Moons", n_samples=200)
+    model = KNNModel().fit(ctx.X_train, ctx.y_train, {"n_neighbors": k})
+    fig = model.plot_decision_boundary(ctx.X_train, ctx.y_train, ctx.X_test, ctx.y_test, resolution=50,
+                                       bounds=ctx.bounds)
+    assert (len(fig.axes[0].child_axes) == 1) is has_inset
+    plt.close("all")
+
+
+def test_one_axis_exclusion_starts_exactly_at_2k_equals_n():
+    """2k >= n で注記を出さない条件の境目 (n=142 の偶数): k=70 (2k = n - 2) は g の軸 (1) を返し、k=71 (2k = n) は
+    None。除外の式が 2k > n や 2k >= n - 2 に 1 段ずれると、どちらかで落ちる。標準化なしの Penguins (mm × g、
+    test 0.35)。除外が無いときは k=71 でも 1 を返す (半径が g の幅を越えないため)。"""
+    from model_grid import SCALE_CASE, real_ctx
+
+    ctx = real_ctx(*SCALE_CASE, test_size=0.35)
+    assert len(ctx.X_train) == 142
+    for k, expected in ((70, 1), (71, None), (72, None)):
+        model = KNNModel().fit(ctx.X_train, ctx.y_train, {"n_neighbors": k}, standardize=False)
+        assert model.one_axis_dominance() == expected, k
+
+
+def _vote_accuracy(X_fit, y_fit, X_eval, y_eval, k, weights):
+    from models.knn import _accuracy_by_k
+
+    return float(_accuracy_by_k(np.asarray(X_fit, float), np.asarray(y_fit), np.asarray(X_eval, float),
+                                np.asarray(y_eval), [k], weights, 2)[0])
+
+
+def test_vote_ties_go_to_class_0_and_a_clear_majority_wins_like_sklearn():
+    """同票は class 0 (sklearn の predict と同じ)。2 点 (class 0 と class 1) の真ん中の点、k=2: 同票で、正解が 0 なら
+    正解率 1、正解が 1 なら 0。同票を class 1 にする変異では逆になる。3 対 2 (60%) の多数派は勝つ (勝つ条件を
+    「60% より多い」に厳しくする変異で落ちる)。どちらも sklearn の predict と一致することも確かめる。"""
+    fit_X, fit_y = [[0.0, 0.0], [1.0, 0.0]], [0, 1]
+    mid = [[0.5, 0.0]]
+    assert KNeighborsClassifier(n_neighbors=2).fit(fit_X, fit_y).predict(mid)[0] == 0
+    assert _vote_accuracy(fit_X, fit_y, mid, [0], 2, "uniform") == 1.0
+    assert _vote_accuracy(fit_X, fit_y, mid, [1], 2, "uniform") == 0.0
+    # 3 対 2: 近い順に class 1, 1, 1, 0, 0 (すべて query (0, 0) から距離 1〜5)。k=5 の多数決は class 1 (60%)
+    X = [[1.0, 0.0], [2.0, 0.0], [3.0, 0.0], [4.0, 0.0], [5.0, 0.0]]
+    y = [1, 1, 1, 0, 0]
+    q = [[0.0, 0.0]]
+    assert KNeighborsClassifier(n_neighbors=5).fit(X, y).predict(q)[0] == 1
+    assert _vote_accuracy(X, y, q, [1], 5, "uniform") == 1.0
+    assert _vote_accuracy(X, y, q, [0], 5, "uniform") == 0.0
+
+
+def test_distance_weights_use_only_the_zero_distance_points():
+    """distance 重みで距離 0 の点があれば、その点だけで投票する (sklearn と同じ)。query と同じ座標に class 1 が 1 点、
+    ごく近い (1e-8) class 0 が 3 点: 距離 0 の点だけなら class 1。距離 0 を大きな重み (1e6) に置き換える変異では
+    近い 3 点 (各 1e8) が勝って class 0 になり、特別扱いをやめる変異では 0 割りの nan で class 0 になる。"""
+    X = [[0.0, 0.0], [1e-8, 0.0], [0.0, 1e-8], [-1e-8, 0.0]]
+    y = [1, 0, 0, 0]
+    q = [[0.0, 0.0]]
+    assert KNeighborsClassifier(n_neighbors=4, weights="distance").fit(X, y).predict(q)[0] == 1
+    assert _vote_accuracy(X, y, q, [1], 4, "distance") == 1.0
+    assert _vote_accuracy(X, y, q, [0], 4, "distance") == 0.0
+
+
+@pytest.mark.parametrize("weights", ["uniform", "distance"])
+def test_cv_curve_scaler_is_fit_on_the_training_fold_only_with_outliers(weights):
+    """K10 (CV のスケーラーが全データで学習される漏れ)。標準化の平均・標準偏差が fold の訓練側だけで決まること。
+    穴だった理由: Penguins などの標準化の対照は、fold の分布がそろっていて、全データで学習しても結果が変わらない。
+    ここでは縦軸に大きな外れ値 (×40) が 2 点ある 40 点のデータ (seed 0) で、外れ値が検証側に入る fold と訓練側に入る
+    fold で標準偏差が大きく変わる。Pipeline の cross_val_score と、k=1,3,5,9 の全部で一致する。
+    全データで学習する変異 (fit(X)) と、検証側で学習する変異 (fit(X_va)) のどちらも、k=5 か 9 で食い違う。"""
+    from sklearn.model_selection import StratifiedKFold
+    from sklearn.preprocessing import StandardScaler
+
+    rng = np.random.default_rng(0)
+    n = 40
+    y = np.r_[np.zeros(n // 2, int), np.ones(n // 2, int)]
+    X = np.c_[rng.normal(0, 1, n) + 1.5 * y, rng.normal(0, 1, n)]
+    X[rng.choice(n, 2, replace=False), 1] *= 40
+    ks = [1, 3, 5, 9]
+    _, acc = KNNModel._cv_curve(X, y, ks, weights, 2, standardize=True)
+    folds = StratifiedKFold(5, shuffle=True, random_state=0)
+    for k, a in zip(ks, acc):
+        pipe = Pipeline([("s", StandardScaler()), ("m", KNeighborsClassifier(n_neighbors=k, weights=weights))])
+        assert a == pytest.approx(cross_val_score(pipe, X, y, cv=folds).mean()), k

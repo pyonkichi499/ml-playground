@@ -307,3 +307,60 @@ def test_density_dashed_line_is_the_models_decision_boundary(variant, prior):
     assert len(verts) > 50
     assert np.max(np.abs(model.predict_proba(verts) - 0.5)) < 1e-3
     plt.close("all")
+
+
+# ---- C-3 (変異テストで見つかった穴): 等高線の高さの値、周辺分布の pdf ----
+@pytest.mark.parametrize("swap", [False, True], ids=["as_is", "labels_swapped"])
+@pytest.mark.parametrize("variant", ["nb", "qda"])
+def test_density_contour_levels_top_out_at_the_higher_of_the_two_class_peaks(variant, swap):
+    """M37: 両クラス共通の等高線の高さは、2 クラスの密度の最大のうち大きい方までを 8 等分する (上端 = 大きい方の山の頂上)。
+    クラスごとに levels を決めなくても、片方のクラスの最大だけで決める変異は「高さが両クラスで同じ」を満たしたまま
+    もう片方の山を切ってしまう。ラベルを入れ替えた対 (swap) で、山が高いのが class 0 の場合も class 1 の場合も確かめる。"""
+    from matplotlib.contour import ContourSet
+
+    from models.base import PlotContext
+
+    # 広いクラス (sd 2.0) と狭いクラス (sd 0.5): 狭い方の山が約 16 倍高い。Moons は 2 つの山がほぼ同じ高さ (0.444 と 0.454)
+    # で、片方だけで決める変異と区別できない
+    rng = np.random.default_rng(0)
+    X = np.r_[rng.normal(0, 2.0, (60, 2)), rng.normal([1.0, 1.0], 0.5, (60, 2))]
+    y = np.r_[np.zeros(60, int), np.ones(60, int)]
+    y = 1 - y if swap else y
+    ctx = PlotContext.build(X, y, X[:0], y[:0])
+    model = GaussianModel().fit(X, y, {"variant": variant, **({"reg_param": 0.1} if variant == "qda" else {})})
+    (_, fig, *_), = model.extra_plots(ctx)
+    ax = _density_axes(fig)
+    xx, yy, grid = ctx.bounds.mesh(150)
+    peaks = [float(np.exp(_gaussian_logpdf(grid, m, c)).max()) for m, c in model.class_gaussians()]
+    assert max(peaks) > 1.1 * min(peaks)  # 前提: 2 つの山の高さがはっきり違う
+    sets = [c for c in ax.collections if isinstance(c, ContourSet) and list(c.levels) != [0.0]]
+    assert len(sets) == 2
+    for cs in sets:
+        assert len(cs.levels) == 8
+        assert cs.levels[-1] == pytest.approx(max(peaks))
+        np.testing.assert_allclose(cs.levels, np.linspace(0, max(peaks), 9)[1:])
+    plt.close("all")
+
+
+def test_naive_bayes_marginal_curves_are_the_fitted_normal_densities():
+    """Ga7: 周辺分布の曲線 (上と右のパネル) は、推定した正規分布の確率密度 (標準偏差 √分散 で決まる)。
+    分散をそのまま sd に使う変異 (√ なし) や、sd を 2 倍にする変異では、曲線が scipy.stats.norm.pdf とずれる。
+    Moons の 2 クラス × 2 軸の 4 本を、t の全点で比べる。"""
+    from scipy.stats import norm
+
+    ctx = load_ctx("Moons", n_samples=200)
+    model = GaussianModel().fit(ctx.X_train, ctx.y_train, {"variant": "nb"})
+    (_, fig, *_), = model.extra_plots(ctx)
+    gaussians = model.class_gaussians()
+    ax_top, ax_right = (a for a in fig.axes if a.get_ylabel().startswith("p(") or a.get_xlabel().startswith("p("))
+    seen = 0
+    for k, (mean, cov) in enumerate(gaussians):
+        top = [ln for ln in ax_top.lines if len(ln.get_xdata()) == 200][k]
+        t, pdf = top.get_data()
+        np.testing.assert_allclose(pdf, norm.pdf(t, mean[0], np.sqrt(cov[0, 0])), rtol=1e-9)
+        right = [ln for ln in ax_right.lines if len(ln.get_ydata()) == 200][k]
+        pdf, t = right.get_data()
+        np.testing.assert_allclose(pdf, norm.pdf(t, mean[1], np.sqrt(cov[1, 1])), rtol=1e-9)
+        seen += 2
+    assert seen == 4
+    plt.close("all")

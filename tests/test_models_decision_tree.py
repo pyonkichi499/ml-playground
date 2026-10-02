@@ -8,6 +8,8 @@ from model_checks import (
 )
 from model_grid import REAL_CASES, check_real_data, full_grid, param_id, real_case_id, time_interaction
 
+from sklearn.tree import DecisionTreeClassifier
+
 from models.base import MODEL_REGISTRY, PlotContext
 from models.decision_tree import DecisionTreeModel
 
@@ -214,3 +216,60 @@ def test_min_samples_leaf_reaches_the_estimator_and_bounds_every_leaf(dataset):
         assert leaf_sizes.min() >= m, (m, leaf_sizes.min())
         stats[m] = (len(leaf_sizes), int(leaf_sizes.min()))
     assert stats[20][0] < stats[1][0] and stats[20][1] > stats[1][1]
+
+
+# ---- C-3 (変異テストで見つかった穴): max_depth の効き方、None、criterion、ノードの色 ----
+def test_max_depth_is_the_exact_limit_and_none_is_unlimited():
+    """D3・D5: max_depth=d の木は、深く育つデータで実際の深さがちょうど d。None は制限なし (sklearn の何も指定しない木と同じ
+    深さ)。Circles n=2000 (訓練 1400 点) は、制限しないと深さ 19 まで育つので、d+1 への変異 (D3)、None を 3 や 15 に置き換える
+    変異 (D5) のどれも、深さが食い違って落ちる。"""
+    ctx = load_ctx("Circles", n_samples=2000)
+    free = DecisionTreeClassifier(random_state=0).fit(ctx.X_train, ctx.y_train).get_depth()
+    assert free > 15  # 前提: 制限なしの木は 15 より深い
+    for d in (1, 3, 15):
+        model = DecisionTreeModel().fit(ctx.X_train, ctx.y_train, {"max_depth": d})
+        assert model.estimator.get_depth() == d and model.metrics(ctx)["実際の深さ"] == d
+    model = DecisionTreeModel().fit(ctx.X_train, ctx.y_train, {"max_depth": None})
+    assert model.estimator.get_depth() == free
+    assert model.estimator.score(ctx.X_train, ctx.y_train) == 1.0
+
+
+def test_criterion_reaches_the_estimator_and_changes_the_tree():
+    """D4: criterion (gini / entropy) が木の作り方に届く。Moons (n=200、深さ制限なし) では gini が 23 ノード、entropy が
+    25 ノードの木になる (前提)。どちらの基準も、sklearn の同じ設定の木と分割の閾値まで一致する。常に gini にする変異も、
+    常に entropy にする変異も、片方の基準で落ちる。"""
+    ctx = load_ctx("Moons", n_samples=200)
+    trees = {}
+    for criterion in ("gini", "entropy"):
+        model = DecisionTreeModel().fit(ctx.X_train, ctx.y_train, {"criterion": criterion, "max_depth": None})
+        ref = DecisionTreeClassifier(random_state=0, criterion=criterion).fit(ctx.X_train, ctx.y_train)
+        assert model.estimator.criterion == criterion
+        np.testing.assert_array_equal(model.estimator.tree_.threshold, ref.tree_.threshold)
+        trees[criterion] = model.estimator.tree_.node_count
+    assert trees["gini"] != trees["entropy"]  # 前提: 基準で木が変わるデータ
+
+
+def test_tree_figure_colours_nodes_by_majority_class_and_purer_nodes_are_darker():
+    """D6: ノードの色 = 多数派クラスの色 (青 / 橙)、濃さ (alpha) = 純度。純度が高いほど濃い (0.15 + 0.75 × 純度)。
+    純度の色が逆になる変異 (純粋な葉が薄くなる) では、ジニ不純度が小さいノードの方が薄くなって落ちる。"""
+    from matplotlib.colors import to_rgb
+
+    from models.base import CLASS_COLORS
+
+    ctx = load_ctx("Moons", n_samples=200)
+    model = DecisionTreeModel().fit(ctx.X_train, ctx.y_train, {"max_depth": 4})
+    (_, fig, *_), = model.extra_plots(ctx)
+    boxes = [t.get_bbox_patch() for t in fig.axes[0].texts if t.get_bbox_patch() is not None]
+    tree = model.estimator.tree_
+    assert len(boxes) == tree.node_count
+    impurity = tree.impurity
+    alpha = np.array([b.get_alpha() for b in boxes])
+    assert impurity.min() == 0.0 and impurity.max() > 0.4  # 前提: 純粋な葉と、ほぼ半々のノード (根) がある
+    pure, mixed = int(np.argmin(impurity)), int(np.argmax(impurity))
+    assert alpha[pure] == pytest.approx(0.90) and alpha[mixed] < 0.30
+    order = np.argsort(impurity)  # 不純度が小さい (純粋な) 順に、alpha は減らない側の逆 (濃い → 薄い) に並ぶ
+    assert np.all(np.diff(alpha[order]) <= 1e-12)
+    for node, box in enumerate(boxes):
+        majority = int(np.argmax(tree.value[node, 0]))
+        assert to_rgb(box.get_facecolor()[:3]) == pytest.approx(to_rgb(CLASS_COLORS[majority]))
+    plt.close("all")
