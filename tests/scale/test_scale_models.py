@@ -85,7 +85,8 @@ EXPECTED_CASES_PER_DATASET = {
 
 
 def test_case_count_matches_corner_params_rule():
-    """件数が AD-17 で見積もった値 (1 データセットあたり 78 件、DATASETS の 7 データセットで 546 件。データセット数は DATASETS から数える) のままであること。"""
+    """件数が AD-17 で見積もった値 (1 データセットあたり 78 件、DATASETS の 7 データセットで 546 件。データセット数は DATASETS から数える) のままであること。
+    546 件は test_model_at_scale の件数 (CASES)。このテスト自身の 1 件を足したファイル全体の収集件数は 547。"""
     got = {cls.__name__: len(params_cases(cls)) for cls in MODEL_REGISTRY.values()}
     assert got == EXPECTED_CASES_PER_DATASET
     assert sum(EXPECTED_CASES_PER_DATASET.values()) == 78
