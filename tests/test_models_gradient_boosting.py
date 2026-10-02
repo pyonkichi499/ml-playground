@@ -296,6 +296,8 @@ def test_staged_scores_match_estimator():
     # 訓練損失は木を足すごとに (ほぼ) 単調に減る
     _, train_loss = _staged_scores(m.estimator, ctx.X_train, ctx.y_train)
     assert np.all(np.diff(train_loss) <= 1e-9)
+    # 「減らない」だけでは、損失が全く動かないモデル (学習率 ≈ 0) でも通る。実際に下がることも確かめる
+    assert train_loss[-1] < train_loss[0] - 0.1
 
 
 def _n_train(n_samples: int, test_size: float) -> int:
