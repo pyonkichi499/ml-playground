@@ -6,6 +6,7 @@ tests/test_real_datasets.py が確かめる。ここでは、どのデータセ�
 
 import ast
 import hashlib
+import re
 import socket
 from dataclasses import fields
 from pathlib import Path
@@ -153,6 +154,94 @@ def test_data_package_has_no_network_code_and_stays_pure():
             else:
                 continue
             assert not roots & forbidden_imports, f"{path.name} imports {roots & forbidden_imports}"
+
+
+# ---- 規則 8・9: ライセンスの範囲と、医療・健康データの注意 (CLAUDE.md「データセットの規則」) ---------
+# 許可するライセンス名 (spec.license の先頭)。広げるのはクライアントの承認の後だけ (規則 8)。
+# 語の境界を見る: "MITNOT-free custom" は通さず、"CC BY-SA 4.0" / "CC BY-NC 4.0" のように CC BY の直後が "-" や英数字のものも通さない
+ALLOWED_LICENSE = re.compile(r"^(CC0|CC BY(?![-\w])|MIT|BSD|Public Domain)\b")
+# 条件つきのライセンスの印 (許可の列に先頭が合っていても落とす)。"CC BY NC 4.0" (ハイフンなし)・"CC BY 4.0 Non-Commercial" も拾う
+FORBIDDEN_LICENSE_TAG = re.compile(r"\b(NC|SA|ND)\b|non-?commercial", re.IGNORECASE)
+# 医療・健康のデータと見なす語 (description_ja と source を見る)。足りない語は、足す人が見つけたときに足す
+HEALTH_WORDS = (
+    "診断", "医療", "患者", "腫瘤", "腫瘍", "悪性", "良性", "がん", "癌", "病",
+    "diagnos", "clinical", "patient", "cancer", "tumor", "malignant", "disease", "medical", "health",
+)
+
+
+def license_problem(lic: str) -> str | None:
+    """規則 8 の判定。許可されていれば None、そうでなければ理由。"""
+    if not ALLOWED_LICENSE.search(lic):
+        return "許可リスト (CC0 / CC BY / MIT / BSD / Public Domain) の先頭に合わない"
+    if FORBIDDEN_LICENSE_TAG.search(lic):
+        return "条件つきのライセンスの印 (NC / SA / ND / non-commercial) がある"
+    return None
+
+
+def is_health_data(description_ja: str, source: str) -> bool:
+    text = (description_ja + " " + source).lower()
+    return any(w.lower() in text for w in HEALTH_WORDS)
+
+
+def has_not_for_diagnosis_notice(description_ja: str) -> bool:
+    """規則 9 (a): 「診断」と「ではない / 使わない」が、同じ 1 文にあること (離れた別の文では足りない)。"""
+    sentences = [t for t in re.split(r"[。.!?！？\n]", description_ja) if t]
+    return any("診断" in t and ("ではない" in t or "使わない" in t) for t in sentences)
+
+
+@pytest.mark.parametrize("name", REAL)
+def test_real_dataset_license_is_in_the_allowed_list(name):
+    lic = DATASETS[name].license
+    assert license_problem(lic) is None, f"{name}: license {lic!r}: {license_problem(lic)} (規則 8: クライアントに聞く)"
+
+
+@pytest.mark.parametrize("name", REAL)
+def test_health_data_carries_the_not_for_diagnosis_notice(name):
+    spec = DATASETS[name]
+    if is_health_data(spec.description_ja, spec.source):
+        assert has_not_for_diagnosis_notice(spec.description_ja), (
+            f"{name}: 医療・健康のデータの説明カードに「診断に使わない」旨がない (規則 9)"
+        )
+
+
+def test_health_detection_on_the_registered_real_data():
+    # 語を足したことで、Penguins・Iris・Wine に誤って医療語が当たらず、Breast Cancer は当たること
+    detected = {n for n in REAL if is_health_data(DATASETS[n].description_ja, DATASETS[n].source)}
+    assert detected == {"Breast Cancer"}
+
+
+@pytest.mark.parametrize("lic", [
+    "CC0 1.0", "CC BY 4.0", "CC BY 4.0 (UCI version; terms for the scikit-learn copy not stated)", "MIT",
+    "MIT License", "BSD-3-Clause", "BSD", "Public Domain",
+])
+def test_license_judgement_accepts_permissive_licenses(lic):
+    assert license_problem(lic) is None
+
+
+@pytest.mark.parametrize("lic", [
+    "CC BY-NC 4.0", "CC BY NC 4.0", "CC BY 4.0 Non-Commercial", "CC BY 4.0 NonCommercial", "CC BY-SA 4.0", "CC BY SA 4.0",
+    "CC BY-ND 4.0", "CC BY-NC-SA 4.0", "MITNOT-free custom", "GPL-3.0", "Apache-2.0", "", "unknown",
+])
+def test_license_judgement_rejects_conditional_or_unlisted_licenses(lic):
+    assert license_problem(lic) is not None
+
+
+@pytest.mark.parametrize(("text", "ok"), [
+    ("分類の練習用のデータで、診断に使うものではない。", True),
+    ("練習用。診断には使わない。", True),
+    ("診断の練習に使える。これは小さなデータではない。", False),  # 「診断」と「ではない」が別の文
+    ("診断に使える。", False),
+    ("分類の練習用のデータ。", False),
+    ("", False),
+])
+def test_diagnosis_notice_must_be_in_one_sentence(text, ok):
+    assert has_not_for_diagnosis_notice(text) is ok
+
+
+@pytest.mark.parametrize("word", ["腫瘍", "悪性", "良性", "tumor", "malignant", "health", "Cancer", "診断"])
+def test_health_words_are_detected(word):
+    assert is_health_data(f"データ {word} の説明", "")
+    assert is_health_data("", f"source {word}")
 
 
 # ---- C: 後方互換 -------------------------------------------------------------
