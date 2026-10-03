@@ -391,6 +391,7 @@ def test_duplicate_stats_small_example():
     assert duplicate_stats(X[:0], y[:0]) == DuplicateStats(0, 0, 0)
 
 
+@pytest.mark.claim("X12-1", "X12-2")
 @pytest.mark.parametrize(
     ("name", "features", "expected"),
     [
@@ -401,6 +402,8 @@ def test_duplicate_stats_small_example():
     ],
 )
 def test_duplicate_stats_pinned_on_full_data(name, features, expected):
+    """全データでの重なりの数 (shared, hidden, conflicting) を固定する。
+    出典: docs/experiments.md 実験 12 (Iris の花弁の組は class が食い違う点 3 点、がく片の組は 24 点)。"""
     X, _, y, _ = DataConfig(name, 200, 0.2, 42, 0.0, features=features).load()
     assert duplicate_stats(X, y) == expected
 

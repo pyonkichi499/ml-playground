@@ -9,12 +9,17 @@ ID で突き合わせる。**ID の突き合わせだけ**を見る。主張の�
 - K2: 走査で見つかった ID は、すべて registry にある (タイポ、表への足し忘れ)。
 - K3: registry の ID は、どこかから 1 回は参照されている (孤児の禁止)。
 - K4: `claim` マーカーが付いたテストは、docstring に出典 (「出典」の語か AD の決定番号) を持つ。ファイル名だけでは通さない。
-- K5: 数値の主張 (registry の fragments) は、その ID の `claim:` コメントがある文書の同じ行に、断片が 1 語一致 (空白を除く) で含まれる。
+- K5: registry の fragments (数値の主張は必須。文の主張も、短い決め手の語句を持てる) は、その ID の `claim:` コメントがある
+  文書の同じ行に、断片が 1 語一致 (空白を除く) で含まれる。
 - K6: 古い言い方 (registry の FORBIDDEN_PHRASES) が、文書 (docs/experiments.md・README)・UI (app_pages・models) に無い。
 - K7: 空振り防止。走査が壊れて 0 件のまま通ることを防ぐ。
 - 形: `claim` マーカーの引数は文字列の ID だけ (引数なし・文字列でない値は名指しで落ちる)。数えるのは `test_*` の関数と
   `Test*` のクラスだけで、skip・skipif・xfail が付いたもの (モジュール全体の pytestmark を含む) は数えない
-  (数えない対象にマーカーが付いていたら、名指しで落とす。黙って 0 件にしない)。
+  (数えない対象にマーカーが付いていたら、名指しで落とす。黙って 0 件にしない)。数えないのは次の形も含む:
+  skip・xfail を入れた別名 (`skip_x = pytest.mark.skip(...)` を `@skip_x` で付ける)、parametrize の `marks=` に入れた skip・xfail、
+  本文の `pytest.skip()` / `pytest.xfail()` / `pytest.importorskip()`。helper を通した間接の skip・xfail (tests/scale の
+  assert_exact など。測った範囲を外れたときに xfail にする設計) は、静的には見えないので、まだ数えている。
+- UI の `# claim: ID` は、定数の代入・def・class の直前の行 (空行を挟まない)、または同じ行の行末に付ける。別の場所に付いていたら落ちる。
 3 者の食い違いは、ID ごとに「どこにあって・どこに無いか」を名指しで出す。
 """
 
@@ -31,6 +36,8 @@ ROOT = Path(__file__).resolve().parents[1]
 SELF = Path("tests") / "test_claims_consistency.py"  # 例の ID を文字列に持つので、走査の対象から外す
 SKIP_DIRS = {".git", ".team", ".venv", "__pycache__", ".pytest_cache", ".ruff_cache", "node_modules"}
 KINDS = ("test", "doc", "ui")
+#: ID の書式: S1・M-RF-3・T-2・D-4 (領域の文字 + 番号) と、X11-3 (実験番号-番号。数字が 2 つ続く)
+CLAIM_ID = r"(?:[SMTD](?:-[A-Z]+)?-?\d+|X\d+-\d+)"
 
 DOC_COMMENT = re.compile(r"<!--\s*claim:\s*([^>]*?)\s*-->")  # 文書: <!-- claim: S1 --> (複数はカンマか空白)
 UI_COMMENT = re.compile(r"#\s*claim:[ \t]*([^\n]*)")  # UI: # claim: S1 (行末まで ID だけを書く)
@@ -54,6 +61,30 @@ def _mark_name(node: ast.expr) -> str | None:
     return None
 
 
+def _skip_aliases(tree: ast.Module) -> set[str]:
+    """モジュール直下の `NAME = pytest.mark.skip(...)` のような別名の名前 (skip・xfail を入れたもの)。"""
+    names = set()
+    for node in tree.body:
+        if isinstance(node, ast.Assign) and _mark_name(node.value) in NOT_COUNTED_MARKS:
+            names |= {t.id for t in node.targets if isinstance(t, ast.Name)}
+    return names
+
+
+def _indirect_skip_reason(node, aliases: set[str]) -> str | None:
+    """別名・marks=・本文の呼び出しによる skip / xfail があれば、その説明。"""
+    for deco in node.decorator_list:
+        head = deco.func if isinstance(deco, ast.Call) else deco
+        if isinstance(head, ast.Name) and head.id in aliases:
+            return f"別名 {head.id} (skip / xfail) が付いている"
+        if any(_mark_name(n) in NOT_COUNTED_MARKS for n in ast.walk(deco)):
+            return "parametrize の marks などに skip / xfail が入っている"
+    if not isinstance(node, ast.ClassDef):
+        for n in ast.walk(node):
+            if isinstance(n, ast.Call) and ast.unparse(n.func) in ("pytest.skip", "pytest.xfail", "pytest.importorskip"):
+                return f"本文に {ast.unparse(n.func)}() がある (条件によって走らない)"
+    return None
+
+
 def _module_not_counted(tree: ast.Module) -> bool:
     """モジュール全体に skip / xfail がかかっているか (`pytestmark = pytest.mark.skip(...)` かそのリスト)。"""
     for node in tree.body:
@@ -71,6 +102,7 @@ def scan_markers(source: str, path: str) -> tuple[dict[str, list[str]], list[str
     と、テストでない関数・クラスの claim マーカーは数えず、形の違反として名指しする。"""
     tree = ast.parse(source)
     module_skipped = _module_not_counted(tree)
+    aliases = _skip_aliases(tree)
     found: dict[str, list[str]] = {}
     no_source: list[str] = []
     malformed: list[tuple[str, str]] = []
@@ -87,6 +119,10 @@ def scan_markers(source: str, path: str) -> tuple[dict[str, list[str]], list[str
             continue
         if module_skipped or any(_mark_name(d) in NOT_COUNTED_MARKS for d in node.decorator_list):
             malformed.append((where, "skip / skipif / xfail が付いたテストの claim は数えない (走らないテストは主張を確かめない)"))
+            continue
+        indirect = _indirect_skip_reason(node, aliases)
+        if indirect:
+            malformed.append((where, f"{indirect}ので数えない (走らない可能性のあるテストは主張を確かめない)"))
             continue
         for marker in markers:
             args = marker.args if isinstance(marker, ast.Call) else []
@@ -114,6 +150,31 @@ def scan_comments(text: str, path: str, pattern: re.Pattern) -> dict[str, list[s
         for claim_id in _split_ids(match.group(1)):
             found.setdefault(claim_id, []).append(path)
     return found
+
+
+CODE_TARGET = re.compile(r"^\s*(?:[A-Za-z_][\w.]*(?:\s*:[^=]+)?\s*=(?!=)|def\s|class\s|async\s+def\s|@)")
+
+
+def ui_attachment_violations(text: str, path: str) -> list[str]:
+    """UI のソースの `# claim:` が、定数の代入・def・class に付いているか。
+    行末のコメントは、その行のコードが対象。独立したコメント行は、直後の行 (ほかのコメント行は飛ばす。空行は不可) が対象。"""
+    out = []
+    lines = text.split("\n")
+    for i, line in enumerate(lines):
+        match = UI_COMMENT.search(line)
+        if not match:
+            continue
+        code = line[: match.start()].strip()
+        if code:
+            target = line[: match.start()]
+        else:
+            j = i + 1
+            while j < len(lines) and lines[j].strip().startswith("#"):
+                j += 1
+            target = lines[j] if j < len(lines) else ""
+        if not CODE_TARGET.match(target):
+            out.append(f"形 {path}: `# claim:` の対象が定数の代入・def・class でない (「{target.strip()[:40]}」。直前の行か行末に付ける)")
+    return out
 
 
 def scan_comment_lines(text: str, pattern: re.Pattern) -> dict[str, list[str]]:
@@ -157,7 +218,7 @@ def forbidden_in(text: str, path: str) -> list[str]:
 def scan_repo(root: Path = ROOT) -> dict:
     """実物の走査。found_tests / found_docs / found_ui / no_source / malformed と、走査したファイル数を返す。"""
     result = {"tests": {}, "docs": {}, "ui": {}, "doc_lines": {}, "no_source": [], "malformed": [], "n_test_files": 0,
-              "n_marked_files": 0, "n_doc_files": 0, "n_ui_files": 0, "forbidden": []}
+              "n_marked_files": 0, "n_doc_files": 0, "n_ui_files": 0, "forbidden": [], "ui_attach": []}
     for path in _files(root, "tests", ".py"):
         rel = path.relative_to(root)
         if rel == SELF:
@@ -180,19 +241,21 @@ def scan_repo(root: Path = ROOT) -> dict:
             result["n_ui_files"] += 1
             text = path.read_text(encoding="utf-8")
             _merge(result["ui"], scan_comments(text, path.relative_to(root).as_posix(), UI_COMMENT))
+            result["ui_attach"] += ui_attachment_violations(text, path.relative_to(root).as_posix())
             _scan_forbidden(result, path.relative_to(root).as_posix(), text)
     return result
 
 
 # ------------------------------------------------------------------ 検査 (純粋: 実物と負の対照の両方が呼ぶ)
 def find_violations(registry: dict, found_tests: dict, found_docs: dict, found_ui: dict,
-                    *, no_source=(), malformed=(), doc_lines=None, forbidden=()) -> list[str]:
+                    *, no_source=(), malformed=(), doc_lines=None, forbidden=(), ui_attach=()) -> list[str]:
     """違反の一覧 (空なら一致)。各行は「検査名 ID: 何がどこに無いか」で、名指しにする。"""
     found = {"test": found_tests, "doc": found_docs, "ui": found_ui}
     label = {"test": "テスト", "doc": "文書", "ui": "UI"}
     out = []
     for where, reason in malformed:
         out.append(f"形 {where}: {reason}")
+    out.extend(ui_attach)
     for hit in forbidden:  # K6
         out.append(f"K6 {hit}")
     for claim_id, spec in registry.items():
@@ -239,7 +302,8 @@ def scanned():
 def test_repo_claims_are_consistent(scanned):
     violations = find_violations(CLAIMS, scanned["tests"], scanned["docs"], scanned["ui"],
                                  no_source=scanned["no_source"], malformed=scanned["malformed"],
-                                 doc_lines=scanned["doc_lines"], forbidden=scanned["forbidden"])
+                                 doc_lines=scanned["doc_lines"], forbidden=scanned["forbidden"],
+                                 ui_attach=scanned["ui_attach"])
     assert not violations, "\n".join(violations)
 
 
@@ -252,11 +316,12 @@ def test_scan_is_not_empty(scanned):
 
 def test_registry_entries_are_well_formed():
     for claim_id, spec in CLAIMS.items():
-        assert re.fullmatch(r"[SMTDX](?:-[A-Z]+)?-?\d+", claim_id), claim_id
+        assert re.fullmatch(CLAIM_ID, claim_id), claim_id
         assert spec["kind"] in ("text", "number"), claim_id
         assert spec["summary"].strip() and spec["required"], claim_id
         assert set(spec["required"]) <= set(KINDS), claim_id
-        assert bool(spec.get("fragments")) == (spec["kind"] == "number"), (claim_id, "number の主張だけが断片を持つ")
+        if spec["kind"] == "number":
+            assert spec.get("fragments"), (claim_id, "number の主張は断片を持つ")
 
 
 # ------------------------------------------------------------------ 負の対照 (メモリ上の変異。検査自体が落とすことを確かめる)
@@ -447,6 +512,89 @@ def test_negative_control_k6_forbidden_phrase():
 def test_scan_comment_lines_returns_the_whole_line():
     text = "前の行\n数値 0.758 の段落 <!-- claim: S5 -->\n次の行 0.999\n"
     assert scan_comment_lines(text, DOC_COMMENT) == {"S5": ["数値 0.758 の段落 <!-- claim: S5 -->"]}
+
+
+def test_claim_id_format_accepts_x_with_two_numbers():
+    for ok in ("S1", "M-RF-3", "M-KNN-2", "T-2", "D-4", "X11-3", "X12-1", "X1-12"):
+        assert re.fullmatch(CLAIM_ID, ok), ok
+    for bad in ("X", "X11", "X-11-3", "S", "S1a", "x11-3", "X11-", "Y1", "X11-3-1"):
+        assert not re.fullmatch(CLAIM_ID, bad), bad
+    # X11-3 は走査でも 1 つの ID として読まれ、registry に無ければ K2 になる
+    assert scan_comments("<!-- claim: X11-3, S1 -->", "d.md", DOC_COMMENT) == {"X11-3": ["d.md"], "S1": ["d.md"]}
+    violations = find_violations(REG, T, {**D, "X11-3": ["docs/x.md"]}, U)
+    assert len(violations) == 1 and violations[0].startswith("K2 X11-3:"), violations
+
+
+def test_negative_control_k5_fragment_on_a_text_claim():
+    """文の主張も、決め手の短い語句 (fragments) を持てる。言い換えで語句が消えたら落ちる。"""
+    registry = {"S1": {"kind": "text", "summary": "x", "required": ("test", "doc"), "fragments": ("数値の丸めによる違いを除いて",)}}
+    t, d = {"S1": ["tests/a.py::t"]}, {"S1": ["README.md"]}
+    ok = {"S1": ["結果が変わらない (数値の丸めによる違いを除いて)。 <!-- claim: S1 -->"]}
+    assert find_violations(registry, t, d, {}, doc_lines=ok) == []
+    reworded = {"S1": ["結果が変わらない (丸めによる違いを除く)。 <!-- claim: S1 -->"]}
+    violations = find_violations(registry, t, d, {}, doc_lines=reworded)
+    assert len(violations) == 1 and violations[0].startswith("K5 S1:"), violations
+
+
+INDIRECT = '''
+import pytest
+
+skip_it = pytest.mark.skip(reason="x")
+
+@skip_it
+@pytest.mark.claim("S1")
+def test_alias():
+    """出典: AD-14.4"""
+
+@pytest.mark.parametrize("x", [1, pytest.param(2, marks=pytest.mark.xfail)])
+@pytest.mark.claim("S2")
+def test_param_marks():
+    """出典: AD-14.4"""
+
+@pytest.mark.claim("S3")
+def test_body_skip():
+    """出典: AD-14.4"""
+    if True:
+        pytest.skip("x")
+
+@pytest.mark.claim("S4")
+def test_importorskip():
+    """出典: AD-14.4"""
+    pytest.importorskip("nonexistent_module_x")
+
+@pytest.mark.parametrize("x", [1, 2])
+@pytest.mark.claim("S5")
+def test_plain_parametrize():
+    """出典: AD-14.4"""
+    with pytest.raises(ValueError):
+        raise ValueError
+'''
+
+
+def test_scan_markers_does_not_count_indirect_skip_or_xfail():
+    found, _, malformed = scan_markers(INDIRECT, "tests/i.py")
+    assert found == {"S5": ["tests/i.py::test_plain_parametrize"]}, found
+    assert sorted(w for w, _ in malformed) == sorted(
+        f"tests/i.py::{n}" for n in ("test_alias", "test_param_marks", "test_body_skip", "test_importorskip"))
+    reasons = dict(malformed)
+    assert "別名 skip_it" in reasons["tests/i.py::test_alias"]
+    assert "pytest.skip()" in reasons["tests/i.py::test_body_skip"] and "pytest.importorskip()" in reasons["tests/i.py::test_importorskip"]
+
+
+def test_ui_comment_must_sit_on_a_constant():
+    ok = 'A = 1  # claim: S1\n# claim: S2\nB = (\n    "x"\n)\n# claim: S3\n# 説明のコメント\ndef f():\n    pass\n# claim: S4\nHINT: str = "y"\n'
+    assert ui_attachment_violations(ok, "app_pages/p.py") == []
+    cases = {
+        "blank_between": "# claim: S1\n\nA = 1\n",
+        "on_a_call": "# claim: S1\nprint('x')\n",
+        "at_end_of_file": "A = 1\n# claim: S1",
+        "trailing_on_call": "print('x')  # claim: S1\n",
+        "in_a_comparison": "# claim: S1\nx == 1\n",
+    }
+    for name, text in cases.items():
+        violations = ui_attachment_violations(text, "app_pages/p.py")
+        assert len(violations) == 1 and violations[0].startswith("形 app_pages/p.py: `# claim:`"), (name, violations)
+    assert find_violations(REG, T, D, U, ui_attach=["形 app_pages/p.py: `# claim:` x"])[0].startswith("形 app_pages/p.py")
 
 
 def test_scan_comments_doc_and_ui():

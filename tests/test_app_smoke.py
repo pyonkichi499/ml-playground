@@ -474,8 +474,10 @@ def _card_text(at: AppTest) -> str:
     return "\n".join(m.value for m in card.markdown)
 
 
+@pytest.mark.claim("X12-2", "X12-3", "X12-4")
 def test_real_data_round_trip_and_data_card():
-    """実データの特徴量の組と無効なスライダーの値がページ往復で保たれ、データカードの内容が正しい。"""
+    """実データの特徴量の組と無効なスライダーの値がページ往復で保たれ、データカードの内容が正しい。
+    出典: docs/experiments.md 実験 12 (データカードの「食い違う点 3 点」と、シード 42・0 での訓練データの中の食い違い)。"""
     at = open_app(KNN, dataset="Iris", n_samples=350, noise=0.35)
     card = _card_text(at)
     assert "class 0 = versicolor（青） / class 1 = virginica（橙）" in card

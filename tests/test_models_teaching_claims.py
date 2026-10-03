@@ -651,6 +651,7 @@ DUPLICATE_CASES = {
 }
 
 
+@pytest.mark.claim("X12-4")
 @pytest.mark.parametrize("case", list(DUPLICATE_CASES))
 def test_knn_distance_train_accuracy_with_identical_coordinates(case):
     """knn.py weights の help「訓練正解率は 1 になる (ただし、同じ座標に違うラベルの点がある場合を除く)」と
