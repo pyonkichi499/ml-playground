@@ -1,0 +1,24 @@
+# 既定のテストだけを、push と pull request のたびに流す。
+# timing（性能目標）と scale（大規模検証）は流さない（pyproject.toml の addopts が除く）。
+name: CI
+
+on:
+  push:
+  pull_request:
+
+# リポジトリの読み取りだけ。書き込みの権限は与えない。
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v6
+      - uses: astral-sh/setup-uv@v7
+        with:
+          python-version: "3.14"
+      # uv.lock のとおりに入れる。lock が pyproject.toml と食い違えば、ここで止まる。
+      - run: uv sync --locked
+      - run: uv run pytest -q
