@@ -741,6 +741,7 @@ def fit_raw_and_scaled(model_cls, params, scaling, seed, standardize=False):
     return raw, scaled, grid, T(grid)
 
 
+@pytest.mark.claim("S1")
 @guarded
 @pytest.mark.parametrize("scaling", list(SCALINGS))
 @pytest.mark.parametrize("model_key", list(SCALE_INVARIANT))
@@ -762,6 +763,7 @@ def test_A_trees_and_lda_are_scale_invariant(model_key, scaling):
     assert_exact(f"{model_key} invariant to {scaling}", check)
 
 
+@pytest.mark.claim("S3")
 @guarded
 @pytest.mark.parametrize("scaling", list(SCALINGS))
 @pytest.mark.parametrize("model_key", list(SCALE_UNCHANGED_IN_MEASURED_RANGE))
@@ -782,6 +784,7 @@ def test_A_nb_and_qda_predicted_class_unchanged_in_measured_range(model_key, sca
     assert_exact(f"{model_key} predicted class unchanged in measured range, {scaling}", check)
 
 
+@pytest.mark.claim("S4")
 @guarded
 @pytest.mark.parametrize("scaling", list(SCALINGS))
 def test_C_qda_with_reg_param_is_not_scale_invariant(scaling):
@@ -793,6 +796,7 @@ def test_C_qda_with_reg_param_is_not_scale_invariant(scaling):
     assert_tendency(f"qda reg_param>0 depends on {scaling}", holds)
 
 
+@pytest.mark.claim("S5")
 @guarded
 @pytest.mark.parametrize("scaling", list(SCALINGS))
 @pytest.mark.parametrize("model_key", list(SCALE_SENSITIVE))
@@ -807,6 +811,7 @@ def test_C_knn_and_svm_depend_on_feature_scale(model_key, scaling):
     assert_tendency(f"{model_key} depends on {scaling}", holds)
 
 
+@pytest.mark.claim("S5")
 @guarded
 @pytest.mark.parametrize("scaling", list(SCALINGS))
 @pytest.mark.parametrize("model_key", list(SCALE_SENSITIVE))

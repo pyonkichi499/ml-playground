@@ -403,8 +403,10 @@ def _grid_agreement(standardize_a: bool, standardize_b: bool, config) -> float:
     return float((a == b).mean())
 
 
+@pytest.mark.claim("S1", "S2", "S3", "S4", "S5")
 def test_svm_on_penguins_standardize_changes_the_boundary():
-    """Penguins (mm と g が混在) の SVM は、標準化の有無で境界が変わる。既定は実データで標準化 on。"""
+    """Penguins (mm と g が混在) の SVM は、標準化の有無で境界が変わる。既定は実データで標準化 on。
+    出典: docs/decisions.md AD-14.4 (標準化の caption の言い方)。"""
     pair = ("bill_length_mm", "body_mass_g")  # スケールの違う組 (presets[1])
     at = open_app(SVM, dataset="Palmer Penguins")
     at.sidebar.selectbox(key="data.Palmer Penguins.preset").set_value(",".join(pair))
@@ -517,10 +519,12 @@ def test_real_data_round_trip_and_data_card():
     assert "テスト側" not in card
 
 
+@pytest.mark.claim("S1")
 @pytest.mark.parametrize("model_name, params", [(DT, {}), (RF, {}), (GB, {}), (GAUSS, {"variant": "lda"})])
 def test_tree_family_and_lda_unchanged_by_per_feature_rescaling(model_name, params):
     """caption「特徴量ごとの拡大縮小で結果が変わりません」の裏づけ: Penguins (mm と g) の片方の単位を変えて学習し
-    直しても、決定木・ランダムフォレスト・勾配ブースティング・LDA の予測は同じ (数値誤差の範囲)。標準化は適用されないので、フラグではなく特徴量を直接変える。"""
+    直しても、決定木・ランダムフォレスト・勾配ブースティング・LDA の予測は同じ (数値誤差の範囲)。標準化は適用されないので、フラグではなく特徴量を直接変える。
+    出典: docs/decisions.md AD-14.4。"""
     config = DataConfig("Palmer Penguins", 300, 0.0, 42, 0.3, features=("bill_length_mm", "body_mass_g"), standardize=False)
     X_train, X_test, y_train, _ = config.load()
     scale = np.array([1.0, 0.001])  # 体重を g から kg に
@@ -537,8 +541,10 @@ BUILT_IN_STANDARDIZE_KEYS = {LOGREG, MLP}  # モデルの中ですでに標準�
 UNIT_DEPENDENT_KEYS = {"GAUSS:nb", "GAUSS:qda"}  # 単位で結果が変わりうる。標準化は適用しない
 
 
+@pytest.mark.claim("S1", "S2", "S3")
 def test_every_non_scale_sensitive_model_is_classified():
-    """scale_sensitive = False のモデルはすべて、不変 / 内蔵 / 単位依存のどれかに明示的に分類されている。"""
+    """scale_sensitive = False のモデルはすべて、不変 / 内蔵 / 単位依存のどれかに明示的に分類されている。
+    出典: docs/decisions.md AD-14.4。"""
     keys = set()
     for name, cls in MODEL_REGISTRY.items():
         if cls.scale_sensitive:

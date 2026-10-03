@@ -535,6 +535,7 @@ def fit_raw_and_scaled(model_cls, params, name, data, standardize=False):
     return raw, scaled, grid, T(grid)
 
 
+@pytest.mark.claim("S1", "S3")
 @pytest.mark.parametrize("name", list(SCALINGS))
 @pytest.mark.parametrize("model_key", list(SCALE_CHECKED))
 def test_predictions_keep_under_measured_rescalings(moons, model_key, name):
@@ -565,6 +566,7 @@ def test_predictions_keep_under_measured_rescalings(moons, model_key, name):
 
 
 @pytest.mark.parametrize("name", list(SCALINGS))
+@pytest.mark.claim("S4")
 def test_qda_with_reg_param_is_not_scale_invariant(moons, name):
     """AD-14.4 (修正後):「reg_param > 0 の QDA はスケーリングに不変ではない (元の単位で単位行列に向けて縮める)」
     — 上の不変性テストの対照。不変性の主張は reg_param = 0 に限られる。"""
@@ -573,6 +575,7 @@ def test_qda_with_reg_param_is_not_scale_invariant(moons, name):
     assert agreement < CHANGED_MAX_AGREEMENT, (name, agreement)
 
 
+@pytest.mark.claim("S5")
 @pytest.mark.parametrize("name", list(SCALINGS))
 @pytest.mark.parametrize("model_key", list(SCALE_SENSITIVE))
 def test_knn_and_svm_depend_on_feature_scale(moons, model_key, name):
@@ -585,6 +588,7 @@ def test_knn_and_svm_depend_on_feature_scale(moons, model_key, name):
     assert agreement < CHANGED_MAX_AGREEMENT, (model_key, name, agreement)
 
 
+@pytest.mark.claim("S5")
 @pytest.mark.parametrize("name", list(SCALINGS))
 @pytest.mark.parametrize("model_key", list(SCALE_SENSITIVE))
 def test_make_estimator_standardize_restores_scale_invariance(moons, model_key, name):
