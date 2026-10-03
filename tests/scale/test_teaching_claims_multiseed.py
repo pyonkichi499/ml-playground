@@ -802,7 +802,7 @@ def test_C_qda_with_reg_param_is_not_scale_invariant(scaling):
 @pytest.mark.parametrize("model_key", list(SCALE_SENSITIVE))
 def test_C_knn_and_svm_depend_on_feature_scale(model_key, scaling):
     """C。knn.py「距離で決めるので、特徴量の単位 (mm と g など) で結果が変わる」、svm.py「カーネル (距離・内積) が
-    特徴量の単位で変わる」— 標準化しないと、変換で予測が 1% を超えて変わる。"""
+    特徴量の単位で変わる」— 標準化しないと、変換で予測が 1% を超えて変わる。出典: docs/decisions.md AD-14.4。"""
     model_cls, params = SCALE_SENSITIVE[model_key]
 
     def holds(seed):

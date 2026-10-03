@@ -9,16 +9,20 @@ from models import MODEL_REGISTRY
 from models.base import FitError, PlotContext
 
 METRICS_PER_ROW = 4
+# claim: S1
 STANDARDIZE_NO_EFFECT = (
     "このモデルでは「特徴量を標準化する」は結果をほとんど変えません（特徴量ごとの拡大縮小で、数値の丸めによる違いを除いて結果が変わりません）。"
 )
+# claim: S2
 STANDARDIZE_BUILTIN = (
     "このモデルでは「特徴量を標準化する」は結果を変えません（モデルの中ですでに標準化しています）。"
 )
+# claim: S3
 STANDARDIZE_UNIT_DEPENDENT = (
     "単位によって結果が変わることがあります。このモデルには標準化を適用していません。"
 )
 BUILTIN_STANDARDIZING = ("LogisticRegressionModel", "MLPModel")
+# claim: S4
 STANDARDIZE_NOT_APPLIED_QDA = (
     "このモデルには標準化を適用していません。QDA の reg_param は特徴量の単位に依存するため、"
     "単位の違う特徴量の組では結果が単位の選び方で変わります。"
