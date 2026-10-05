@@ -21,4 +21,6 @@ jobs:
           python-version: "3.14"
       # uv.lock のとおりに入れる。lock が pyproject.toml と食い違えば、ここで止まる。
       - run: uv sync --locked
-      - run: uv run pytest -q
+      # テストの中で出た非推奨の警告 (3 種) をエラーにする。探索の CV の経路はこの指定では見えない
+      # (tuning/evaluate.py が警告を無視し、並列のワーカーは -W を引き継がない)。そこは AD-19 のテストが受け持つ。
+      - run: uv run pytest -q -W error::FutureWarning -W error::DeprecationWarning -W error::PendingDeprecationWarning

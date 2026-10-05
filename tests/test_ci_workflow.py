@@ -2,11 +2,15 @@
 
 GitHub Actions はローカルでは動かせないので、設定ファイルの中身が決まりどおりかだけを確かめる。
 決まり: push と pull request で動く / `uv sync --locked` で lock のとおりに入れる / 既定のテストだけを流す
-(timing・scale は流さない) / permissions は contents: read だけ。
+(timing・scale は流さない。非推奨の警告 3 種は -W でエラーにする) / permissions は contents: read だけ。
+あわせて、pyproject.toml の addopts の --strict-markers (未登録のマーカーを収集のエラーにする) が効いているかも確かめる。
 PyYAML は直接の依存ではないので使わず、標準ライブラリだけで読む (文字列と行の範囲。1 秒未満)。
 """
 
+import os
 import re
+import subprocess
+import sys
 import tomllib
 from pathlib import Path
 
@@ -77,14 +81,52 @@ def test_sync_runs_before_pytest():
 
 def test_runs_default_tests_only():
     (cmd,) = [c for c in _run_commands() if "pytest" in c]
-    assert cmd == "uv run pytest -q"
-    text = CI.read_text(encoding="utf-8")
+    args = cmd.split()
+    assert args[:4] == ["uv", "run", "pytest", "-q"], cmd
+    # 非推奨の警告 3 種をエラーにする (-W <filter> の形で、それぞれちょうど 1 回)。ほかの引数は足さない
+    filters = [args[i + 1] for i, a in enumerate(args[:-1]) if a == "-W"]
+    expected = ["error::FutureWarning", "error::DeprecationWarning", "error::PendingDeprecationWarning"]
+    assert sorted(filters) == sorted(expected), f"-W の指定: {filters}"
+    assert len(args) == 4 + 2 * len(expected), f"pytest の行に余分な引数がある: {cmd}"
     code = "\n".join(_lines())
     assert "-m timing" not in code and "-m scale" not in code
     assert "tests/scale" not in code
     # 既定で timing・scale を除くのは pyproject.toml の addopts。これが外れたら CI が重くなる
     addopts = tomllib.loads((ROOT / "pyproject.toml").read_text(encoding="utf-8"))["tool"]["pytest"]["ini_options"]["addopts"]
     assert "not timing" in addopts and "not scale" in addopts
+
+
+def test_pytest_rejects_unregistered_markers(tmp_path):
+    # 綴り違いのマーカー (timng など) が警告だけで通ると、timing のテストが既定の実行に紛れ込み、
+    # claim の数え漏れも起きる。addopts の --strict-markers で、収集のエラーにする
+    pyproject = (ROOT / "pyproject.toml").read_text(encoding="utf-8")
+    addopts = tomllib.loads(pyproject)["tool"]["pytest"]["ini_options"]["addopts"]
+    assert "--strict-markers" in addopts.split()
+    # 実際に効くか: この pyproject の設定のまま、小さな別の場所で収集してみる (1 回 1 秒程度)
+    (tmp_path / "test_ok.py").write_text(
+        "import pytest\n\n@pytest.mark.claim('S1')\ndef test_a():\n    pass\n\n"
+        "@pytest.mark.timing\ndef test_b():\n    pass\n", encoding="utf-8")
+    (tmp_path / "test_typo.py").write_text(
+        "import pytest\n\n@pytest.mark.timng\ndef test_c():\n    pass\n", encoding="utf-8")
+    env = {k: v for k, v in os.environ.items() if k != "PYTEST_ADDOPTS"}
+
+    def collect(config_text: str, name: str) -> subprocess.CompletedProcess:
+        (tmp_path / "pyproject.toml").write_text(config_text, encoding="utf-8")
+        return subprocess.run([sys.executable, "-m", "pytest", "--collect-only", "-q", "-p", "no:cacheprovider", name],
+                              cwd=tmp_path, env=env, capture_output=True, text=True, timeout=60)
+
+    # 登録済みのマーカー (claim・timing) は通り、addopts の -m も効いたまま (timing は外れる)
+    ok = collect(pyproject, "test_ok.py")
+    assert ok.returncode == 0, ok.stdout + ok.stderr
+    assert "test_ok.py::test_a" in ok.stdout and "test_ok.py::test_b" not in ok.stdout
+    # 綴り違いは収集のエラーになる
+    typo = collect(pyproject, "test_typo.py")
+    assert typo.returncode != 0
+    assert "'timng' not found in `markers`" in typo.stdout + typo.stderr
+    # 対照: --strict-markers だけを外すと、同じ綴り違いが通ってしまう (失敗の理由がこのフラグであること)
+    loose = collect(pyproject.replace("--strict-markers ", "", 1), "test_typo.py")
+    assert loose.returncode == 0, loose.stdout + loose.stderr
+    assert "test_typo.py::test_c" in loose.stdout
 
 
 def test_python_version_matches_project():

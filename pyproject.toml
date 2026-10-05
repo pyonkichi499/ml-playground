@@ -29,4 +29,5 @@ markers = [
     "scale: 大規模な条件での検証 (AD-17)。既定では実行しない。テスト品質チームが予約枠で -m scale を付けて流す",
     "claim: 教える主張の ID を付ける目印 (例: claim(\"S1\"))。実行には影響しない。tests/test_claims_consistency.py が tests/claims_registry.py と突き合わせる",
 ]
-addopts = "-m 'not timing and not scale'"
+# --strict-markers: 登録していないマーカー (綴り違いの timing・claim など) を、警告ではなくエラーにする
+addopts = "--strict-markers -m 'not timing and not scale'"
