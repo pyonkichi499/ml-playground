@@ -91,6 +91,22 @@ def texts(at: AppTest) -> list[str]:
     return out
 
 
+#: ② と ④ の説明 (CURVE_NOTES・TEST_NOTES) の決め手の語句。主張そのものは tests/test_tuning_claims.py が確かめる
+NOTES_NEW = (
+    "★ は CV の推定で最も良かった所", "★ もこの範囲の 1 点にすぎない",  # ② (T-2)
+    "向きの違う 2 つの偏り", "候補 (試行) が多いほど起きやすい", "(k−1)/k", "テストが CV より高くも低くも出る",  # ④ (T-1)
+)
+NOTES_OLD = ("ちょうどよい複雑さ", "平均的にはテストの方が低く出る", "最良の CV スコアは楽観的")
+
+
+def assert_curve_and_test_notes(shown: list[str]) -> None:
+    """② の検証曲線と ④ のテスト評価の説明が画面に出ていて、訂正前の言い方が残っていない (T-1・T-2)。"""
+    for phrase in NOTES_NEW:
+        assert any(phrase in t for t in shown), phrase
+    for phrase in NOTES_OLD:
+        assert not any(phrase in t for t in shown), phrase
+
+
 def page_functions(*names: str) -> dict[str, Any]:
     """ページのソースから指定した関数定義だけを取り出して実行し、名前空間を返す。"""
     tree = ast.parse(PAGE.read_text(encoding="utf-8"))
@@ -173,6 +189,7 @@ def test_full_flow_2d_svm(monkeypatch):
     assert "± SE" in table.columns
     assert all(0.0 < v < 0.2 for v in table["± SE"])  # 30 点のテスト: √(p(1−p)/30) ≤ 0.092
     assert any("誤差棒の重なりだけでは決められない" in t for t in texts(at))
+    assert_curve_and_test_notes(texts(at))
     # KU-11: ④ の図に渡る ± SE は、表と同じ runner.test_standard_error の値
     y_test = result["data_config"].load()[3]
     passed_se = calls["plot_cv_vs_test"][-1]["test_se"]
