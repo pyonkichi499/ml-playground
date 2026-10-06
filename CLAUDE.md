@@ -18,15 +18,18 @@ Python 3.14（uv で管理）。動作確認したバージョン: streamlit 1.6
 1. 更新の前後に、探索の CV の警告テスト（`tests/test_tuning_engine.py` の、FutureWarning・DeprecationWarning をエラーにするテスト）を最初に流し、隠れた非推奨がないか確かめる。更新の前に流した結果を、基準線にする。
 2. `uv lock --upgrade`（対象だけなら `--upgrade-package <名前>`。版を指定するなら `-P 'scikit-learn==1.9.2'`）を流し、`git diff uv.lock` で差分を確認する。上がった版の一覧を記録に残す。`uv lock` は `.venv` を変えないので、テストの前に `uv sync --locked` が要る。
 3. 警告をエラーにした全体テストを流す: `uv run pytest -q -W error::FutureWarning -W error::DeprecationWarning -W error::PendingDeprecationWarning`。この実行は、探索の CV の経路の非推奨を検出できない（`tuning/evaluate.py` が警告を無視し、並列のワーカーは親のフィルターを引き継がないため）。その経路は、`cross_validate` に直接警告をかけるテストで確かめる。落ちたら、原因（非推奨、警告、数値の変化）を直すか、更新を見送る。
-4. 数値を含む文書とテスト（実験ガイド `docs/experiments.md`、`tests/test_models_teaching_claims.py`、`tests/scale/test_teaching_claims_multiseed.py`）を、担当者が再現する。文書の数値が変わったら、文書を直す。
+4. 数値を含む文書とテスト（実験ガイド `docs/experiments.md`、`tests/test_models_teaching_claims.py`、`tests/scale/test_teaching_claims_multiseed.py`、`tests/scale/test_experiment6_multiseed.py`）を、担当者が再現する。文書の数値が変わったら、文書を直す。
 5. 1〜4 が済んだら、コミットの列を通す。冒頭の「動作確認したバージョン」も、上がったものに直す。
 - 軽い手順（パッチ版だけが上がる場合。例: 1.9.1 → 1.9.2）: 手順 1 と 3 が通れば、手順 4（数値の再現）は省いてよい。手順 2 の差分の確認と、承認は省かない。マイナー版以上（1.9 → 1.10 など）は、手順 1〜5 をすべて行う。
 - 全体テストは、上の「コマンド」のとおり担当者が排他制御つきのスクリプトで流す。timing と scale は `-m timing` / `-m scale` を付けて別に流す。
 
 ## どこに何があるか
-- `app.py` — エントリポイント。`st.navigation` のルーターで、共通のデータ設定サイドバーを描いてからページを実行する。
+- `app.py` — エントリポイント。`st.navigation` のルーターで、共通のデータ設定サイドバーを描いてからページを実行する。ページは「プレイグラウンド」（既定）・「ハイパーパラメータ探索」・「おすすめの実験」の 3 つ。サイドバーは「おすすめの実験」でも同じに描く（ページによって分けない）。
 - `app_pages/playground.py` — 1 つのモデルについて、サイドバーのパラメータ、決定境界、指標、追加の図を表示する。
 - `app_pages/tuning.py` — ハイパーパラメータ探索ページ（タブ ①〜④、Grid / Random / TPE）。
+- `app_pages/experiments.py` — 「おすすめの実験」ページ。`docs/experiments.md` を読んで表示するだけで、ウィジェットは置かない。
+- `common/experiments_doc.py` — 実験ガイドを表示用に整える純粋な関数（`load_experiments_markdown`。streamlit・models・tuning を import しない）。除くのは、`<!-- … -->` のコメント、単独行の `<a id="…"></a>`、ページ内リンク `](#exp-…)`（リンクを外して文だけ残す）。外部リンクは残す。結果は文書の更新時刻をキーに使い回す。
+- `docs/experiments.md` — 実験ガイド（数値の正本。教える主張の ID を持つ）。
 - `common/data.py` — 共通のデータ設定サイドバー（`render_data_sidebar`、`current_config`、キャッシュ付きの `load_data`、実データの説明カード `render_data_card`）。
 - `data/` — データセット。ほかのモジュールは `data.generator` から import する。
   - `generator.py` — 登録（`DATASETS`、並び = メニューの順）と、`.load()` / `.normalized()` を持つ frozen な `DataConfig`。
@@ -39,7 +42,7 @@ Python 3.14（uv で管理）。動作確認したバージョン: streamlit 1.6
 ## モデルプラグインの規則（`models/base.py` の docstring も参照）
 1. `models/<name>.py` に `BaseModel` のサブクラスを書き、`@register` を付け、`models/__init__.py` でそのモジュールを import する。アプリ側の変更は不要。
 2. `default_params` には `build()` が受け取る全パラメータを並べる（サイドバーの既定値と、探索時の固定値の唯一の情報源）。`build(params)` は必ず `{**self.default_params, **params}` でマージすること。探索では一部のパラメータだけが渡され、無効な条件付きパラメータは除かれる。
-3. サイドバーのウィジェットには必ず `key=self.key("<param>"), persist_state="session"` を付ける（モデルごとに名前空間を分け、モデルやページを切り替えても値が残る）。ほかのページのウィジェットも同じく、安定した key と `persist_state="session"` が必要。
+3. サイドバーのウィジェットには必ず `key=self.key("<param>"), persist_state="session"` を付ける（モデルごとに名前空間を分け、モデルやページを切り替えても値が残る）。ほかのページのウィジェットも同じく、安定した key と `persist_state="session"` が必要。「おすすめの実験」のページは今ウィジェットを持たない。足すときは同じ規則に従う。
 4. 乱数を使う推定器には `random_state=0` を固定で渡す。ただし、シードを意図して UI のパラメータにしている場合は除く。
 5. クラスメソッド `search_space()` は、モデルのパラメータ空間（`default_params` のキー）での `ParamSpec` のリストを返す。条件付きパラメータは親の後に並べる（`active_if`）。カテゴリの選択肢はプリミティブ型だけ（None やタプルは不可）。空間に数値パラメータが 1 つもないモデルは、探索ページに出ない。`@classmethod` を付け忘れると、`@register` が `TypeError` で失敗する。
 6. `tuning_cost` は `"low" | "medium" | "high"`。これで `tuning/budget.py` の予算が決まる。
@@ -102,7 +105,7 @@ Python 3.14（uv で管理）。動作確認したバージョン: streamlit 1.6
   | 学習時間 | 学習時間 [秒] | fit time [s] | — |
   | 深さの制限なし | 制限なし (None) | None | — |
 
-  ページ名: 「プレイグラウンド」 / 「ハイパーパラメータ探索」。クラス名: UI の文とカラーバー（`P(class 1)`）は "class 0" / "class 1"（青 / 橙）。図の凡例などでクラスを示すときは `PlotContext.class_labels` を使う（合成データは "class 0" / "class 1" のまま、実データでは "class 1 (Chinstrap)" のように種名を添える）。
+  ページ名: 「プレイグラウンド」 / 「ハイパーパラメータ探索」 / 「おすすめの実験」。クラス名: UI の文とカラーバー（`P(class 1)`）は "class 0" / "class 1"（青 / 橙）。図の凡例などでクラスを示すときは `PlotContext.class_labels` を使う（合成データは "class 0" / "class 1" のまま、実データでは "class 1 (Chinstrap)" のように種名を添える）。
 - 全探索マップ（参考）は、1 通りの fold 分割と粗い格子の上でのノイズを含む CV の推定値で、その最大値は楽観的に出る。真の値や答えとして示してはならない。
 - 説明は教育的に正しくなければならない。キャプションが何かを主張するなら、テストでそれを確かめる。
 
