@@ -61,6 +61,7 @@ class MLPModel(BaseModel):
         "seed": 0,
     }
     tuning_cost = "high"
+    standardize_note_kind = "built_in"  # build() の Pipeline の中ですでに標準化している (AD-14.4、S2)
     # max_iter に達したときの ConvergenceWarning は想定内 (メトリクスの「収束」で表示する)。AD-4
     expected_fit_warnings = ((ConvergenceWarning, ""),)
 

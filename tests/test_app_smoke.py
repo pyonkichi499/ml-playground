@@ -210,13 +210,31 @@ def test_logreg_infinite_C_hides_penalty():
     assert "LogisticRegressionModel.penalty" not in [w.key for w in at.sidebar.radio]
 
 
+def main_sequence(at: AppTest) -> list[tuple[str, str]]:
+    """本文 (サイドバー以外) の最上位の要素を、描いた順に (種類, 文の先頭 40 字) で返す。表示の順番を確かめる用。"""
+    out = []
+    for child in at.main.children.values():
+        text = getattr(child, "value", None)
+        if text is None:
+            text = getattr(child, "label", "")
+        out.append((child.type, str(text)[:40]))
+    return out
+
+
+#: 学習の前に描く、データとモデルの説明の並び。学習に失敗しても、ここまでは残る
+DESCRIPTION_TYPES = ["title", "caption", "expander", "info", "caption"]
+
+
 def test_expected_fit_failure_is_shown_as_error_without_traceback():
     """想定内の学習失敗 (AD-12 FitError) は st.error の案内になり、トレースバックは出ない。
+    失敗しても、どのデータのどのモデルで失敗したかが読めるように、タイトル・キャプション・モデルの説明・標準化の
+    注記は消さない。合成データなのでデータカードは描かれない (render_data_card は実データだけ)。
 
     QDA + reg_param 0 は、ノイズ 0 の Linear Separable (n=50, seed=1) で共分散が特異になる。
     """
     at = AppTest.from_file(APP, default_timeout=60)
-    for key, value in {"dataset": "Linear Separable", "n_samples": 50, "noise": 0.0, "seed": 1}.items():
+    for key, value in {"dataset": "Linear Separable", "n_samples": 50, "noise": 0.0, "seed": 1,
+                       "synthetic.standardize": True}.items():
         at.session_state[f"data.{key}"] = value
     at.session_state["playground.model"] = GAUSS
     at.session_state["GaussianModel.variant"] = "qda"
@@ -225,11 +243,65 @@ def test_expected_fit_failure_is_shown_as_error_without_traceback():
     assert not at.exception, at.exception
     assert len(at.error) == 1
     assert "reg_param" in at.error[0].value and "0.05 以上" in at.error[0].value
-    assert not at.metric and not at.subheader  # st.stop() で以降は描かない
+    assert not at.metric and not at.subheader  # st.stop() で以降 (指標・「決定境界」・追加の図) は描かない
+    # 説明は学習の前に描いてあるので残る: タイトル → キャプション → モデルの説明 → 標準化の注記 → 案内
+    assert [kind for kind, _ in main_sequence(at)] == ["title", "caption", "info", "caption", "error"]
+    assert at.caption[0].value == f"Linear Separable × {GAUSS}"
+    assert at.info[0].value == MODEL_REGISTRY[GAUSS].summary
+    assert at.caption[1].value.startswith("単位によって結果が変わることがあります")  # QDA (reg_param = 0) の注記 (S3)
     # 正則化を入れれば普通に描ける
     at.sidebar.slider(key="GaussianModel.reg_param").set_value(0.05)
     step(at)
     assert at.subheader[0].value == "決定境界"
+
+
+def test_expected_fit_failure_on_real_data_keeps_data_card():
+    """実データで想定内の学習失敗 (FitError) が起きても、データカード「データについて」とモデルの説明は残る。
+
+    Breast Cancer の mean_smoothness × worst_smoothness は、QDA (reg_param = 0) が seed によらず落ちる組
+    (tests/test_models_gaussian_real_qda.py の ALWAYS_FAIL。ここでは UI の既定の seed 42・テスト 0.3)。
+    出典: docs/decisions.md AD-12。
+    """
+    at = AppTest.from_file(APP, default_timeout=60)
+    for key, value in {"dataset": "Breast Cancer", "Breast Cancer.preset": "free",
+                       "Breast Cancer.feature_x": "mean_smoothness",
+                       "Breast Cancer.feature_y.mean_smoothness": "worst_smoothness"}.items():
+        at.session_state[f"data.{key}"] = value
+    at.session_state["playground.model"] = GAUSS
+    at.session_state["GaussianModel.variant"] = "qda"
+    at.session_state["GaussianModel.reg_param"] = 0.0
+    at.run()
+    assert not at.exception, at.exception
+    assert at.session_state["data_config"].normalized().features == ("mean_smoothness", "worst_smoothness")
+    assert len(at.error) == 1 and "reg_param" in at.error[0].value
+    # 案内は、実測の最小の固有値と下限を示し、標準化がオンでも起きることを言う (「点がほぼ一直線」と決めつけない)
+    assert "最小の固有値" in at.error[0].value and "1e-04" in at.error[0].value
+    assert "標準化" in at.error[0].value and "幅が小さい" in at.error[0].value
+    assert not at.metric and not at.subheader
+    # 部品ごとに個別に確かめる (どれか 1 つだけが消えたときに、どの部品かが失敗の行で分かるように)。
+    # 例: データカードだけを学習の後ろに戻すと、下の「データカード」の行だけが落ちる
+    kinds = [kind for kind, _ in main_sequence(at)]  # サイドバーの要素は数えない
+    assert kinds.count("title") == 1, "タイトルが残っていない"
+    assert kinds.count("caption") == 2, "キャプションと標準化の注記が残っていない"
+    assert [e.label for e in at.expander] == ["データについて"], "データカードが残っていない"
+    assert kinds.count("info") == 1, "モデルの説明が残っていない"
+    assert [kind for kind, _ in main_sequence(at)] == [*DESCRIPTION_TYPES, "error"]
+    card = _card_text(at)
+    assert "診断" in card and "- 出典:" in card  # 実データの説明カードの中身 (学習用の注意と出典)
+    assert at.info[0].value == MODEL_REGISTRY[GAUSS].summary
+
+
+def test_normal_display_order_is_unchanged():
+    """学習が成功したときの表示の順番は、説明を学習の前に描く並べ替えの前と同じ: タイトル → キャプション → データカード →
+    モデルの説明 → 標準化の注記 → 指標 → 「決定境界」。"""
+    at = open_app(GAUSS, dataset="Palmer Penguins")
+    seq = main_sequence(at)
+    assert [kind for kind, _ in seq[:5]] == DESCRIPTION_TYPES
+    assert seq[2][1] == "データについて"
+    kinds = [kind for kind, _ in seq]
+    boundary = seq.index(("subheader", "決定境界"))
+    assert "flex_container" in kinds[5:boundary]  # 指標の行 (st.columns) は注記の後、「決定境界」の前
+    assert at.metric[0].label == "訓練データの正解率"
 
 
 class _BuggyModel(BaseModel):
@@ -534,33 +606,3 @@ def test_tree_family_and_lda_unchanged_by_per_feature_rescaling(model_name, para
     raw = model().fit(X_train, y_train, params).predict(X_test)
     scaled = model().fit(X_train * scale, y_train, params).predict(X_test * scale)
     assert float((raw == scaled).mean()) >= 0.99
-
-
-# 標準化が効かない (scale_sensitive = False) モデルの分類 (AD-14.4)。caption の言い方はこの分類で決まる。
-# Gaussian は variant ごとに分かれる。新しいモデルを足したら、ここに分類を足す
-SCALE_INVARIANT_KEYS = {DT, RF, GB, "GAUSS:lda"}  # 特徴量ごとの拡大縮小で (数値の丸めを除いて) 結果が変わらない
-BUILT_IN_STANDARDIZE_KEYS = {LOGREG, MLP}  # モデルの中ですでに標準化している
-UNIT_DEPENDENT_KEYS = {"GAUSS:nb", "GAUSS:qda"}  # 単位で結果が変わりうる。標準化は適用しない
-
-
-@pytest.mark.claim("S1", "S2", "S3")
-def test_every_non_scale_sensitive_model_is_classified():
-    """scale_sensitive = False のモデルはすべて、不変 / 内蔵 / 単位依存のどれかに明示的に分類されている。
-    出典: docs/decisions.md AD-14.4。"""
-    keys = set()
-    for name, cls in MODEL_REGISTRY.items():
-        if cls.scale_sensitive:
-            continue
-        if name == GAUSS:
-            (variant_spec,) = [s for s in cls.search_space() if s.name == "variant"]
-            keys |= {f"GAUSS:{v}" for v in variant_spec.choices}
-        else:
-            keys.add(name)
-    classified = SCALE_INVARIANT_KEYS | BUILT_IN_STANDARDIZE_KEYS | UNIT_DEPENDENT_KEYS
-    assert not (SCALE_INVARIANT_KEYS & BUILT_IN_STANDARDIZE_KEYS or SCALE_INVARIANT_KEYS & UNIT_DEPENDENT_KEYS
-                or BUILT_IN_STANDARDIZE_KEYS & UNIT_DEPENDENT_KEYS), "分類が重複している"
-    assert keys == classified, (
-        f"分類表に無い: {sorted(keys - classified)}、モデルが無い: {sorted(classified - keys)}。"
-        "新しいモデルの分類を決める。不変と分類するなら、RF・GB と同じ型の裏づけテストも足す"
-        " (test_tree_family_and_lda_unchanged_by_per_feature_rescaling)"
-    )

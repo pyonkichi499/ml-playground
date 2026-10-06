@@ -21,12 +21,26 @@ STANDARDIZE_BUILTIN = (
 STANDARDIZE_UNIT_DEPENDENT = (
     "単位によって結果が変わることがあります。このモデルには標準化を適用していません。"
 )
-BUILTIN_STANDARDIZING = ("LogisticRegressionModel", "MLPModel")
 # claim: S4
 STANDARDIZE_NOT_APPLIED_QDA = (
     "このモデルには標準化を適用していません。QDA の reg_param は特徴量の単位に依存するため、"
     "単位の違う特徴量の組では結果が単位の選び方で変わります。"
 )
+#: テストデータがあるときだけ advice に添える。テストの正解率を見て値を決めると、テストが選択に使われ、
+#: その正解率は新しいデータより高めに出がち (AD-9。tests/test_playground_test_selection.py の M-PG-1 のテストが確かめる)
+# claim: M-PG-1
+TEST_SELECTION_NOTE = (
+    "ただし、ここでテストの正解率を見ながら値を決めると、テストデータを選択に使ったことになり、"
+    "その正解率は楽観的（新しいデータでの正解率より高め）になりがちです。値を選ぶなら交差検証 (CV) を使いましょう。"
+    "「ハイパーパラメータ探索」のページや、k-NN と勾配ブースティングの図の ★ は、CV で選んだ値です。"
+)
+#: モデルが宣言する標準化の種類 (BaseModel.standardize_kind) → 説明の文
+STANDARDIZE_NOTES = {
+    "invariant": STANDARDIZE_NO_EFFECT,
+    "built_in": STANDARDIZE_BUILTIN,
+    "unit_dependent": STANDARDIZE_UNIT_DEPENDENT,
+    "reg_unit_dependent": STANDARDIZE_NOT_APPLIED_QDA,
+}
 
 
 def standardize_note(model, params: dict, standardize: bool) -> str | None:
@@ -35,18 +49,12 @@ def standardize_note(model, params: dict, standardize: bool) -> str | None:
     make_estimator は scale_sensitive なモデル (k-NN・SVM) にだけ標準化を付けるので、それ以外では設定が効かない。
     理由は 4 通り (AD-14.4 の訂正): 木・RF・GB・LDA は特徴量ごとの拡大縮小で、数値の丸めによる違いを除いて結果が変わらない / LogReg・MLP は内部で標準化済み /
     Naive Bayes と QDA (reg_param = 0) は単位で結果が変わりうるが標準化は適用しない / reg_param > 0 の QDA は単位に
-    依存する (別の文言)。Gaussian の variant と reg_param は params で見分ける。
+    依存する (別の文言)。どれに当たるかは、モデルが standardize_kind(params) で宣言する。未分類 (None) なら文を出さない。
     """
     if not standardize or model.scale_sensitive:
         return None
-    if params.get("variant") == "qda" and float(params.get("reg_param", 0.0)) > 0:
-        return STANDARDIZE_NOT_APPLIED_QDA
-    variant = params.get("variant")
-    if variant in ("nb", "qda"):
-        return STANDARDIZE_UNIT_DEPENDENT
-    if type(model).__name__ in BUILTIN_STANDARDIZING:
-        return STANDARDIZE_BUILTIN
-    return STANDARDIZE_NO_EFFECT
+    kind = model.standardize_kind(params)
+    return None if kind is None else STANDARDIZE_NOTES[kind]
 
 
 config = current_config()
@@ -59,17 +67,8 @@ with st.sidebar:
     params = model.render_params(st)
 
 X_train, X_test, y_train, y_test = load_data(config)
-try:
-    model.fit(X_train, y_train, params, standardize=config.standardize)
-except FitError as exc:
-    # 想定内の失敗 (AD-12) だけを案内として表示する。ほかの例外はバグなので捕まえない
-    st.title("ML Playground")
-    st.caption(f"{config.dataset} × {model_name}")
-    st.error(str(exc))
-    st.stop()
-normalized = config.normalized()
-ctx = PlotContext.build(X_train, y_train, X_test, y_test, spec=config.spec(), features=normalized.features)
 
+# データの説明・モデルの説明・標準化の注記は学習の前に描く。学習に失敗しても、どのデータのどの組で失敗したかが読める
 st.title("ML Playground")
 st.caption(f"{config.dataset} × {model_name}")
 render_data_card(config)
@@ -78,6 +77,15 @@ if model.summary:
 note = standardize_note(model, params, config.standardize)
 if note:
     st.caption(note)
+
+try:
+    model.fit(X_train, y_train, params, standardize=config.standardize)
+except FitError as exc:
+    # 想定内の失敗 (AD-12) だけを案内として表示する。ほかの例外はバグなので捕まえない
+    st.error(str(exc))
+    st.stop()
+normalized = config.normalized()
+ctx = PlotContext.build(X_train, y_train, X_test, y_test, spec=config.spec(), features=normalized.features)
 
 train_acc = accuracy_score(y_train, model.predict(X_train))
 # (ラベル, 値, delta)。1 行に最大 METRICS_PER_ROW 個ずつ並べる (多いと値が切れるため, AD-8)
@@ -103,7 +111,7 @@ with right:
     advice = "ハイパーパラメータを動かして境界の形がどう変わるか観察してみましょう。"
     if ctx.has_test:
         # 訓練とテストの正解率の差で過学習を見分けられるのは、テストデータがあるときだけ (IZ-15 (a))
-        advice = "訓練の正解率が高いのにテストの正解率が低い場合は **過学習** のサイン。" + advice
+        advice = "訓練の正解率が高いのにテストの正解率が低い場合は **過学習** のサイン。" + advice + "\n\n" + TEST_SELECTION_NOTE
     st.markdown(model.boundary_description() + "\n\n" + advice)
     with st.expander("選択中のハイパーパラメータ"):
         st.json(params)

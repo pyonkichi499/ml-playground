@@ -15,6 +15,7 @@ class DecisionTreeModel(BaseModel):
     name = "決定木 (Decision Tree)"
     summary = "「x1 ≤ 0.3 か？」のような質問を繰り返してデータを分割する。境界は軸に平行な階段状になる。"
     default_params = {"max_depth": 3, "criterion": "gini", "min_samples_leaf": 1}
+    standardize_note_kind = "invariant"  # 特徴量ごとの拡大縮小で、丸めを除いて結果が変わらない (AD-14.4、S1)
 
     def render_params(self, st) -> dict[str, Any]:
         d = self.default_params

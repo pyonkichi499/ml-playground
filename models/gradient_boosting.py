@@ -117,6 +117,7 @@ class GradientBoostingModel(BaseModel):
     )
     default_params = {"n_estimators": 100, "learning_rate": 0.1, "max_depth": 3, "subsample": 1.0}
     tuning_cost = "medium"
+    standardize_note_kind = "invariant"  # 特徴量ごとの拡大縮小で、丸めを除いて結果が変わらない (AD-14.4、S1)
 
     def render_params(self, st) -> dict[str, Any]:
         d = self.default_params

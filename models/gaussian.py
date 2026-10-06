@@ -15,7 +15,16 @@ from matplotlib.patches import Ellipse
 from sklearn.discriminant_analysis import LinearDiscriminantAnalysis, QuadraticDiscriminantAnalysis
 from sklearn.naive_bayes import GaussianNB
 
-from models.base import CLASS_COLORS, BaseModel, FitError, PlotContext, register, scatter_points
+from models.base import (
+    CALIBRATION_NOTE,
+    CLASS_COLORS,
+    BaseModel,
+    FitError,
+    PlotContext,
+    StandardizeKind,
+    register,
+    scatter_points,
+)
 from tuning.space import ParamSpec
 
 VARIANT_LABELS = {
@@ -25,6 +34,7 @@ VARIANT_LABELS = {
 }
 VARIANT_SHORT = {"nb": "Naive Bayes", "lda": "LDA", "qda": "QDA"}
 SIGMAS = (1, 2)
+QDA_RANK_TOL = 1e-4  # sklearn の QuadraticDiscriminantAnalysis(tol=1e-4) の既定。共分散の固有値の絶対値の下限
 
 
 def _gaussian_logpdf(points: np.ndarray, mean: np.ndarray, cov: np.ndarray) -> np.ndarray:
@@ -32,6 +42,16 @@ def _gaussian_logpdf(points: np.ndarray, mean: np.ndarray, cov: np.ndarray) -> n
     diff = points - mean
     m2 = np.einsum("ij,jk,ik->i", diff, np.linalg.inv(cov), diff)  # マハラノビス距離の 2 乗
     return -0.5 * m2 - np.log(2 * np.pi) - 0.5 * np.linalg.slogdet(cov)[1]
+
+
+def format_below_tol(value: float, tol: float = QDA_RANK_TOL) -> str:
+    """固有値を表示用に整える。有効数字 2 桁が基本だが、丸めで下限以上に見える (9.96e-05 → 1.0e-04) 場合は、
+    下限を下回って見えるまで桁を増やす (「下限 1e-04 を下回った」と自己矛盾しないように)。"""
+    for digits in range(1, 17):
+        text = f"{value:.{digits}e}"
+        if float(text) < tol or value >= tol:
+            return text
+    return f"{value:.16e}"
 
 
 def _ellipse(mean: np.ndarray, cov: np.ndarray, n_sigma: float, **kwargs) -> Ellipse:
@@ -95,8 +115,9 @@ class GaussianModel(BaseModel):
 
     def fit(self, X: np.ndarray, y: np.ndarray, params: dict[str, Any], *,
             standardize: bool = False) -> "GaussianModel":
-        # sklearn 1.9 の QDA は reg_param=0 でクラス内の共分散がランク落ちすると (点がほぼ一直線に並ぶと)
-        # 警告ではなく LinAlgError を投げる。ノイズ 0・少数点の Linear Separable などで実際に起きる。
+        # sklearn 1.9 の QDA は reg_param=0 でクラス内の共分散の最小の固有値が tol (1e-4、絶対値) 以下になると
+        # 警告ではなく LinAlgError を投げる。点がほぼ一直線に並ぶ場合 (ノイズ 0・少数点の Linear Separable など) の
+        # ほか、特徴量の値の幅が小さい場合 (Breast Cancer の smoothness など、雲が広がっていても) にも起きる。
         # 黙って reg_param を上げると学習者に見せている QDA とは別物になるので、理由と対処を書いた例外に
         # 置き換える (FitError, AD-12)。チューニング (build → cross_validate) ではこの経路を通らず、
         # 失敗は NaN + error になる。
@@ -108,9 +129,18 @@ class GaussianModel(BaseModel):
             match = re.search(r"covariance matrix of class (\S+) is not full rank", str(exc))
             if {**self.default_params, **params}["variant"] != "qda" or match is None:
                 raise
+            label = match.group(1)
+            # 学習者は (失敗すると図が出ないので) 散布図を確かめられない。どちらの原因に当たったかを、
+            # 最小の固有値で示す。sklearn の QDA は固有値を S²/n_samples (ddof=0、標本共分散) で判定するので、
+            # 同じ量 (bias=True) を、そのクラスの訓練点から計算し直す (ddof=1 だと n/(n-1) 倍だけ大きく出て、境目で矛盾する)
+            in_class = X[np.asarray(y).astype(str) == label]
+            eigenvalue = float(np.linalg.eigvalsh(np.cov(in_class, rowvar=False, bias=True)).min())
             raise FitError(
-                f"クラス {match.group(1)} の点がほぼ一直線に並んでいる (または、特徴量の値が小さすぎる) ため、"
-                "QDA の楕円 (共分散) が推定できません。"
+                f"クラス {label} の共分散 (点の広がりを表す行列) の最小の固有値が {format_below_tol(eigenvalue)} で、"
+                f"QDA が許す下限 {QDA_RANK_TOL:.0e} を下回ったため、QDA の楕円が推定できません。"
+                "原因は、そのクラスの点がほぼ一直線に並んでいる場合のほか、特徴量の値の幅が小さい場合 "
+                "(雲が広がって見えても、幅 (標準偏差) が 0.01 前後と小さいと、分散である固有値が下限 1e-4 を下回ります) です。"
+                "QDA は標準化を適用しないので、「特徴量を標準化する」がオンでも起きます。"
                 "共分散の正則化 (reg_param) を 0.05 以上にするか、別の特徴量の組を選んでください "
                 "(合成データなら、ノイズを増やしても直ります)。"
             ) from exc
@@ -129,6 +159,19 @@ class GaussianModel(BaseModel):
             ParamSpec("reg_param", "float", 0.0, 1.0, label="共分散の正則化 (reg_param)",
                       active_if=(("variant", ("qda",)),)),
         ]
+
+    @classmethod
+    def standardize_kind(cls, params: dict[str, Any]) -> StandardizeKind | None:
+        """標準化が効かない理由は variant と reg_param で分かれる (AD-14.4、S1・S3・S4)。UI は variant を必ず渡すが、
+        規則どおり default_params とマージして読む。未知の variant は未分類 (None) にする。"""
+        p = {**cls.default_params, **params}
+        if p["variant"] == "qda" and float(p["reg_param"]) > 0:
+            return "reg_unit_dependent"  # 元の単位で単位行列に向けて縮めるので、単位に依存する
+        if p["variant"] in ("nb", "qda"):
+            return "unit_dependent"  # var_smoothing (NB) と共分散の固有値の絶対値 (QDA) が単位で変わる
+        if p["variant"] == "lda":
+            return "invariant"
+        return None
 
     # ---- 推定した分布 ----
     @property
@@ -160,7 +203,8 @@ class GaussianModel(BaseModel):
     # ---- 決定境界図 ----
     def boundary_description(self) -> str:
         return (
-            "- 背景色: ベイズの定理で求めた **class 1 の確率** P(class 1 | x)（青 = class 0、橙 = class 1）\n"
+            "- 背景色: ベイズの定理で求めた **class 1 の確率** P(class 1 | x)（青 = class 0、橙 = class 1）。"
+            f"{CALIBRATION_NOTE}\n"
             "- 黒線: 確率 0.5 の決定境界\n"
             "- 色付きの楕円: 各クラスについて推定した正規分布 p(x | y) の 1σ・2σ の等高線（+ は平均）。"
             "2 次元では 1σ の楕円の内側に約 39%、2σ に約 86% が入る（1 次元の 68% / 95% とは違う）\n"

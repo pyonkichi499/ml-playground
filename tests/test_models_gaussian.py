@@ -1,5 +1,7 @@
 """ガウス生成モデル (Naive Bayes / LDA / QDA) プラグインのテスト。"""
 
+import re
+
 import matplotlib.pyplot as plt
 import numpy as np
 import pytest
@@ -140,15 +142,22 @@ def test_thumbnail_draws_ellipses_without_legend_label():
 
 
 def test_qda_rank_deficient_class_gives_actionable_error():
-    """reg_param=0 の QDA は、クラスの点が一直線に並ぶと共分散が推定できない。理由と対処を書いた例外にする。"""
+    """reg_param=0 の QDA は、クラス内共分散の最小の固有値が 1e-4 を下回ると推定できない。理由 (最小の固有値の実測値) と
+    対処を書いた例外にする。点が一直線に並ぶ場合の例。"""
     from data.generator import DataConfig
 
     X_train, _, y_train, _ = DataConfig("Linear Separable", 50, 0.0, 1, 0.3).load()  # スライダーで選べる設定
     from models.base import FitError
 
-    with pytest.raises(FitError, match=r"クラス 1 の点がほぼ一直線.*reg_param\) を 0\.05 以上") as info:
+    with pytest.raises(FitError, match=r"クラス 1 の共分散.*最小の固有値が .*reg_param\) を 0\.05 以上") as info:
         GaussianModel().fit(X_train, y_train, {"variant": "qda", "reg_param": 0.0})
     assert isinstance(info.value.__cause__, np.linalg.LinAlgError)  # 元の例外を連鎖
+    message = str(info.value)
+    # 案内の固有値は、そのクラスの訓練点から計算し直した実測値で、sklearn の下限 (1e-4) を下回っている
+    shown = float(re.search(r"最小の固有値が ([0-9.]+e-?\d+)", message).group(1))
+    actual = np.linalg.eigvalsh(np.cov(X_train[y_train == 1], rowvar=False, bias=True)).min()  # sklearn と同じ ddof=0
+    assert shown == pytest.approx(actual, rel=0.06) and shown < 1e-4  # 表示は有効数字 2 桁 (丸め誤差は最大 5%)
+    assert "ほぼ一直線" in message and "標準化" in message
     model = GaussianModel().fit(X_train, y_train, {"variant": "qda", "reg_param": 0.05})
     assert np.isfinite(model.predict_proba(X_train)).all()
     for variant in ("nb", "lda"):  # 他の 2 つは同じデータで学習できる

@@ -34,6 +34,7 @@ class LogisticRegressionModel(BaseModel):
         "多項式特徴量を足すと曲線の境界も引けるが、次数を上げるほど過学習しやすいので正則化 (C) で抑える。"
     )
     default_params = {"degree": 1, "C": 1.0, "penalty": "l2"}
+    standardize_note_kind = "built_in"  # build() の Pipeline の中ですでに標準化している (AD-14.4、S2)
 
     def __init__(self) -> None:
         super().__init__()

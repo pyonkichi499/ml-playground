@@ -31,6 +31,7 @@ class RandomForestModel(BaseModel):
         "min_samples_leaf": 1,
     }
     tuning_cost = "medium"
+    standardize_note_kind = "invariant"  # 特徴量ごとの拡大縮小で、丸めを除いて結果が変わらない (AD-14.4、S1)
     # チューニングページの固定値の初期値だけ木を減らして探索を軽くする (AD-11)。プレイグラウンドと build() には効かない
     tuning_defaults = {"n_estimators": 50}
     # 木が少ないと「どの木でも学習に使われた (OOB の無い) 点」が出て sklearn が警告する。想定内なので局所的に抑制し、

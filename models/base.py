@@ -19,6 +19,8 @@ app 側の変更は不要。
       fit の override は表示用の状態を足すことだけに使い、想定内の学習時の警告は `expected_fit_warnings` で宣言する
     - 決定境界図に要素を重ねるときは `decorate_boundary_plot(..., *, ctx, thumbnail)` を上書きする
       (thumbnail=True のサムネイルではインセット・凡例を描かない)
+    - `scale_sensitive = False` のモデルは、標準化が効かない理由の種類 `standardize_note_kind` を宣言する
+      (params で種類が変わるモデルは classmethod `standardize_kind(params)` を上書きする。AD-14.4)
 """
 
 import warnings
@@ -50,6 +52,14 @@ CLASS_CMAP = ListedColormap(CLASS_COLORS)
 PROBA_CMAP = LinearSegmentedColormap.from_list("proba", [CLASS_COLORS[0], "#ffffff", CLASS_COLORS[1]])
 FEATURE_NAMES = ["x1", "x2"]
 CLASS_NAMES = ["class 0", "class 1"]
+#: 背景の確率についての注意 (較正)。背景を class 1 の確率で塗る boundary_description の背景色の行に付ける
+#: (この既定と models/gaussian.py。k-NN の投票の割合と SVM の決定関数の値は確率と言っていないので付けない)
+# claim: M-CAL-1
+CALIBRATION_NOTE = (
+    "ただし、この値は、実際に class 1 である割合と一致するとは限らない"
+    "（例: 確率 0.9 と出た点を集めても、その 9 割が class 1 とは限らない。"
+    "この一致の度合いを **較正** といい、良し悪しはモデルによって違う）"
+)
 
 
 class FitError(ValueError):
@@ -175,6 +185,12 @@ def plot_region_grid(
     return fig
 
 
+#: standardize_kind の値 (AD-14.4)。"invariant": 特徴量ごとの拡大縮小で、数値の丸めによる違いを除いて結果が変わらない /
+#: "built_in": モデルの中ですでに標準化している / "unit_dependent": 単位によって結果が変わりうるが、標準化は適用しない /
+#: "reg_unit_dependent": 正則化の強さが特徴量の単位に依存する (reg_param > 0 の QDA)
+StandardizeKind = Literal["invariant", "built_in", "unit_dependent", "reg_unit_dependent"]
+
+
 class BaseModel(ABC):
     """全モデルが実装する共通インターフェース。"""
 
@@ -198,6 +214,16 @@ class BaseModel(ABC):
     #: 学習時に想定内として抑制する警告 (category, message の正規表現; "" = すべて)。
     #: BaseModel.fit の中だけで局所的に抑制する (グローバルな警告フィルタは変えない)
     expected_fit_warnings: ClassVar[tuple[tuple[type[Warning], str], ...]] = ()
+    #: scale_sensitive = False のモデルで、「特徴量を標準化する」が効かない理由の種類 (AD-14.4)。
+    #: プレイグラウンドは、これで説明の文 (app_pages/playground.py の STANDARDIZE_*) を選ぶ。None = 未分類で、文を出さない。
+    #: 新しいモデルの種類は、裏づけを測ってから宣言する ("invariant" なら、単位を変えても予測が同じことのテストを足す)
+    standardize_note_kind: ClassVar[StandardizeKind | None] = None
+
+    @classmethod
+    def standardize_kind(cls, params: dict[str, Any]) -> StandardizeKind | None:
+        """標準化が効かない理由の種類。既定は standardize_note_kind。params で種類が変わるモデル (Gaussian の
+        variant など) は上書きし、params は `{**cls.default_params, **params}` でマージして読む。"""
+        return cls.standardize_note_kind
 
     def __init__(self) -> None:
         self.params: dict[str, Any] = {}
@@ -265,7 +291,8 @@ class BaseModel(ABC):
     def boundary_description(self) -> str:
         """決定境界図の凡例説明 (Markdown)。背景の描き方を変えたモデルは上書きする。"""
         return (
-            "- 背景色: モデルが予測する **class 1 の確率**（青 = class 0、橙 = class 1）\n"
+            "- 背景色: モデルが予測する **class 1 の確率**（青 = class 0、橙 = class 1）。"
+            f"{CALIBRATION_NOTE}\n"
             "- 黒線: 確率 0.5 の決定境界\n"
             "- ● 訓練データ / ▲ テストデータ"
         )
