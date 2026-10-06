@@ -12,6 +12,7 @@ st.set_page_config(page_title="ML Playground", layout="wide")
 page = st.navigation([
     st.Page("app_pages/playground.py", title="プレイグラウンド", icon=":material/scatter_plot:", default=True),
     st.Page("app_pages/tuning.py", title="ハイパーパラメータ探索", icon=":material/tune:"),
+    st.Page("app_pages/experiments.py", title="おすすめの実験", icon=":material/menu_book:"),
 ])
 render_data_sidebar()
 page.run()
