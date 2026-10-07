@@ -15,6 +15,7 @@ import math
 import time
 import warnings
 from collections.abc import Iterable, Iterator, Mapping
+from dataclasses import dataclass
 from typing import Any
 
 import numpy as np
@@ -130,6 +131,44 @@ def best_trials(trials: Iterable[TrialRecord]) -> dict[str, TrialRecord]:
     return best
 
 
+@dataclass(frozen=True)
+class HeldOutResult:
+    """1 つの設定をテストデータで評価した結果 (学び直しは 1 回で、score と correct を同じ予測から作る)。
+
+    correct: scoring が accuracy のときだけ、各テスト点を当てたか (bool の配列、テストデータの順)。
+    roc_auc では「当てたか」が決まらないので None。失敗・テストが空のときも None (score は NaN)。
+    """
+
+    score: float
+    correct: np.ndarray | None
+
+
+def _refit_and_evaluate(
+    model_name: str,
+    params_full: Mapping[str, Any],
+    X_train: np.ndarray,
+    y_train: np.ndarray,
+    X_test: np.ndarray,
+    y_test: np.ndarray,
+    scoring: str,
+    standardize: bool,
+) -> HeldOutResult:
+    if len(X_test) == 0:
+        return HeldOutResult(float("nan"), None)
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore", UserWarning)
+        warnings.simplefilter("ignore", RuntimeWarning)
+        warnings.simplefilter("ignore", FutureWarning)
+        try:
+            est = make_estimator(model_class(model_name), dict(params_full), standardize)
+            est.fit(X_train, y_train)
+            score = float(get_scorer(scoring)(est, X_test, y_test))
+            correct = np.asarray(est.predict(X_test) == np.asarray(y_test), dtype=bool) if scoring == "accuracy" else None
+            return HeldOutResult(score, correct)
+        except Exception:  # noqa: BLE001
+            return HeldOutResult(float("nan"), None)
+
+
 def refit_and_test(
     model_name: str,
     params_full: Mapping[str, Any],
@@ -145,18 +184,28 @@ def refit_and_test(
 
     standardize: make_estimator に渡す (探索と同じ組み立て方。スケーラーは訓練データ全体で学習する)。
     """
-    if len(X_test) == 0:
-        return float("nan")
-    with warnings.catch_warnings():
-        warnings.simplefilter("ignore", UserWarning)
-        warnings.simplefilter("ignore", RuntimeWarning)
-        warnings.simplefilter("ignore", FutureWarning)
-        try:
-            est = make_estimator(model_class(model_name), dict(params_full), standardize)
-            est.fit(X_train, y_train)
-            return float(get_scorer(scoring)(est, X_test, y_test))
-        except Exception:  # noqa: BLE001
-            return float("nan")
+    return _refit_and_evaluate(model_name, params_full, X_train, y_train, X_test, y_test, scoring, standardize).score
+
+
+def held_out_results(
+    config: TuningConfig,
+    best: Mapping[str, TrialRecord],
+    X_train: np.ndarray,
+    y_train: np.ndarray,
+    X_test: np.ndarray,
+    y_test: np.ndarray,
+) -> dict[str, HeldOutResult]:
+    """各手法の最良パラメータ (探索軸 + config.fixed) でのテスト結果 {method: HeldOutResult}。
+
+    1 手法につき学び直しは 1 回。score は test_scores と同じ値で、correct (点ごとの正解) も同じ予測から作る。
+    """
+    cls = model_class(config.model_name)
+    out: dict[str, HeldOutResult] = {}
+    for method, trial in best.items():
+        params = resolve_params(cls.search_space(), cls.default_params, config.fixed_dict, trial.params)
+        out[method] = _refit_and_evaluate(config.model_name, params, X_train, y_train, X_test, y_test, config.scoring,
+                                          config.standardize)
+    return out
 
 
 def test_scores(
@@ -168,13 +217,7 @@ def test_scores(
     y_test: np.ndarray,
 ) -> dict[str, float]:
     """各手法の最良パラメータ (探索軸 + config.fixed) でのテストスコア {method: float}。"""
-    cls = model_class(config.model_name)
-    out: dict[str, float] = {}
-    for method, trial in best.items():
-        params = resolve_params(cls.search_space(), cls.default_params, config.fixed_dict, trial.params)
-        out[method] = refit_and_test(config.model_name, params, X_train, y_train, X_test, y_test, config.scoring,
-                                     standardize=config.standardize)
-    return out
+    return {m: r.score for m, r in held_out_results(config, best, X_train, y_train, X_test, y_test).items()}
 
 
 def _hanley_mcneil_se(a: float, n_pos: int, n_neg: int) -> float:
