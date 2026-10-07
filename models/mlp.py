@@ -39,6 +39,15 @@ NONNEGATIVE_ACTIVATIONS = ("relu", "logistic")
 # z = 0 の線と注記の色。赤はテストデータの意味 (TEST_COLOR) と紛れるので中立の濃い灰色にする
 ZERO_LINE_COLOR = "#333333"
 
+# 収束「いいえ」のときだけ、損失曲線のキャプションの先頭に付く文
+NOT_CONVERGED_NOTE = "収束「いいえ」: 損失の改善が止まったと判定される前に、エポック数の上限 (max_iter, 紫の破線) に達して学習を打ち切りました。"
+# 損失曲線は訓練データの損失だけ。収束の有無に関係なく常に出す
+# claim: M-MLP-1
+LOSS_CURVE_NOTE = (
+    "この曲線は訓練データの損失だけです。下がり続けても、新しいデータに当てはまるとは限りません"
+    "(過学習は、この曲線では見えません)。過学習を見るには、境界の形か、テストデータの正解率と比べてください。"
+)
+
 
 def _fmt_number(v: float) -> str:
     return "0" if v == 0 else f"{v:g}"
@@ -132,11 +141,12 @@ class MLPModel(BaseModel):
             "パラメータ数": int(n_params),
         }
 
-    def extra_plots(self, ctx: PlotContext) -> list[tuple[str, Figure] | tuple[str, Figure, str]]:
+    def extra_plots(self, ctx: PlotContext) -> list[tuple[str, Figure, str] | tuple[str, Figure]]:
         mlp = self.final_estimator
-        loss_plot: tuple[str, Figure] | tuple[str, Figure, str] = ("損失曲線", self._plot_loss_curve())
+        caption = LOSS_CURVE_NOTE
         if mlp.n_iter_ >= mlp.max_iter:
-            loss_plot += ("収束「いいえ」: 損失の改善が止まったと判定される前に、エポック数の上限 (max_iter, 紫の破線) に達して学習を打ち切りました。",)
+            caption = f"{NOT_CONVERGED_NOTE} {LOSS_CURVE_NOTE}"
+        loss_plot = ("損失曲線", self._plot_loss_curve(), caption)
         return [
             loss_plot,
             ("第 1 隠れ層の各ニューロンの出力", self._plot_first_layer(ctx)),

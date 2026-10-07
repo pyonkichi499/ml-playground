@@ -12,7 +12,7 @@ from model_checks import (
 from sklearn.exceptions import ConvergenceWarning
 
 from models.base import MODEL_REGISTRY, TEST_COLOR
-from models.mlp import ACTIVATIONS, MLPModel
+from models.mlp import ACTIVATIONS, LOSS_CURVE_NOTE, NOT_CONVERGED_NOTE, MLPModel
 
 pytestmark = [pytest.mark.filterwarnings("error::FutureWarning"), pytest.mark.filterwarnings("error::DeprecationWarning")]
 
@@ -66,7 +66,22 @@ def test_fit_silences_convergence_warning():
         m = MLPModel().fit(ctx.X_train, ctx.y_train, {"max_iter": 10})
     assert m.metrics(ctx)["収束"] == "いいえ"
     (_, _, caption), _ = m.extra_plots(ctx)
-    assert "max_iter" in caption
+    assert caption.startswith(NOT_CONVERGED_NOTE) and "max_iter" in caption
+    assert caption.endswith(LOSS_CURVE_NOTE)  # 既存の文の後ろに、注記が 1 本の文字列として付く
+
+
+@pytest.mark.parametrize("test_size", [0.3, 0.0])
+def test_loss_curve_caption_always_has_the_training_only_note(test_size):
+    """収束したときも (収束「いいえ」の文なしで) 注記が出る。テストデータが無くても出る。"""
+    ctx = load_ctx(test_size=test_size)
+    m = MLPModel().fit(ctx.X_train, ctx.y_train, {"max_iter": 1000})
+    assert m.metrics(ctx)["収束"] == "はい"
+    plots = m.extra_plots(ctx)
+    assert all(len(item) == 3 for item in plots[:1])
+    assert plots[0][2] == LOSS_CURVE_NOTE and "収束「いいえ」" not in plots[0][2]
+    capped = MLPModel().fit(ctx.X_train, ctx.y_train, {"max_iter": 10})
+    assert NOT_CONVERGED_NOTE in capped.extra_plots(ctx)[0][2] and LOSS_CURVE_NOTE in capped.extra_plots(ctx)[0][2]
+    plt.close("all")
 
 
 def test_manual_forward_pass_matches_sklearn():
