@@ -135,24 +135,24 @@ CLAIMS: dict[str, dict] = {
         "kind": "text",
         "summary": "③: 手法の差は、同じ fold ごとの差 (対応のある比較) の平均と SE で見る。fold は独立でなく素の SE は小さめに出る。"
                    "最良どうしは選んだ後の値で上振れを含むので、SE の 2 倍を超えても本物の差とは限らない",
-        "required": ("test",),
+        "required": ("test", "ui"),
     },
     "T-4": {
         "kind": "text",
         "summary": "④: 同じテスト点で比べる 2 設定の差は、片方だけが当てた点の数 (偶然なら半々という二項の確率) で見る。"
                    "誤差棒の重なりでは決められない",
-        "required": ("test",),
+        "required": ("test", "ui"),
     },
     "T-5": {
         "kind": "text",
         "summary": "サイドバー: 葉の最小サンプル数が floor(n/2) + 1 以上 (n は fold の訓練側の点数) だと木は分割できず、"
                    "検証の予測は 1 クラスだけになる (十分条件。これより手前でも起こりうる)",
-        "required": ("test",),
+        "required": ("test", "ui"),
     },
     "T-6": {
         "kind": "text",
         "summary": "サイドバー: k-NN の近傍数 (一様な重み) が fold の訓練側の点数以上だと、多数派クラスだけを予測する",
-        "required": ("test",),
+        "required": ("test", "ui"),
     },
 }
 

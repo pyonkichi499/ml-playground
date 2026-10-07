@@ -185,7 +185,7 @@ def test_full_flow_2d_svm(monkeypatch):
         expected = accuracy_score(y_te0, make_estimator(model, params, cfg.standardize).fit(X_tr, y_tr).predict(X_te))
         assert test[method] == pytest.approx(expected), method
     assert all(v > 0.5 for v in test.values())  # チャンスレベル超え (Moons の 30 点で実測 0.9 前後)
-    table = at.dataframe[-1].value
+    table = next(d.value for d in at.dataframe if "± SE" in d.value.columns)  # ④ の下に「同じテスト点で比べる」の表が続く
     assert "± SE" in table.columns
     assert all(0.0 < v < 0.2 for v in table["± SE"])  # 30 点のテスト: √(p(1−p)/30) ≤ 0.092
     assert any("誤差棒の重なりだけでは決められない" in t for t in texts(at))
@@ -282,7 +282,7 @@ def test_knn_on_iris_real_data():
     test = at.session_state["tuning_result"]["test"]
     assert all(v == 1.0 for v in test.values()), (
         f"前提が崩れた: テスト正解率 = {test}。条件（Iris・シード 0・標準化・k-NN・1 次元・5 試行）を選び直すこと")
-    table = at.dataframe[-1].value
+    table = next(d.value for d in at.dataframe if "± SE" in d.value.columns)  # ④ の下に「同じテスト点で比べる」の表が続く
     assert all(v > 0 for v in table["± SE"]), table  # 全問正解でも誤差棒は 0 にならない
     n_test = len(result["data_config"].load()[3])
     assert any(c.value.startswith(f"テストは {n_test} 点なので、正解率は 1 点で {1 / n_test:.3f} 動く")
@@ -499,6 +499,9 @@ def test_no_ground_truth_wording():
     src = PAGE.read_text(encoding="utf-8")
     for bad in ("正解マップ", "ground truth", "true optimum", "dense-grid optimum", "トライアル"):
         assert bad not in src, bad
+    # ④ の「同じテスト点で比べる」の表 (対応のある比較) は、点ごとに当てたかを指して「正解」と書く。それは許す
+    for ok in ("両方正解", "だけ正解", "点ごとの正解", "不正解"):
+        src = src.replace(ok, "")
     assert src.count("正解") == src.count("正解率")
 
 
@@ -691,3 +694,129 @@ def test_se_caption_wording():
     for text in (acc, auc):
         assert "観測したスコアのまま" in text
         assert not any(word in text for word in ("保守的", "常に", "68%"))
+
+
+# ---------------------------------------------------------------------------
+# B1: ③④ の対応のある比較の表 (N10) と、サイドバーの小さいデータの注意 (N11)
+# 数値は docs/experiments.md 実験 10 の設定 (Moons 500・ノイズ 0.40・シード 42・テスト 0.30、決定木 max_depth ×
+# min_samples_leaf、各手法 9 試行、k=5、探索のシード 0、accuracy)。2026-10-07 に別の入口 (sklearn を直接) でも再現した
+# ---------------------------------------------------------------------------
+def open_experiment10() -> AppTest:
+    at = open_page(DT, **{"data.n_samples": 500, "data.noise": 0.4, "data.test_size": 0.3})
+    at.sidebar.checkbox(key="tuning.DecisionTreeModel.surface").uncheck()  # 全探索マップは計算しない
+    at.sidebar.select_slider(key="tuning.n_trials2d.low").set_value(9).run()
+    assert not at.exception, at.exception
+    return at
+
+
+def table_with(at: AppTest, column: str):
+    found = [d.value for d in at.dataframe if column in d.value.columns]
+    assert len(found) == 1, column
+    return found[0]
+
+
+@pytest.mark.claim("T-3")
+@pytest.mark.claim("T-4")
+def test_paired_tables_reproduce_experiment_10():
+    """T-3・T-4。出典: docs/experiments.md 実験 10 の手数え (2 / 10 / 122 / 16) と、別の入口 (sklearn を直接) での再現 (2026-10-07)。"""
+    at = open_experiment10()
+    result = run_search(at)
+    assert result["config"].n_trials == 9 and result["config"].n_splits == 5 and result["config"].seed == 0
+    # ③ 手法どうしの差 (同じ fold どうしの差): 素の SE の 1.5 倍が補正した SE (k=5)
+    t3 = table_with(at, "平均 ÷ SE (補正)").set_index("組")
+    gr = t3.loc["Grid − Random"]
+    assert gr["差の平均 (A − B)"] == pytest.approx(-0.0143, abs=5e-4)
+    assert gr["SE (素)"] == pytest.approx(0.0120, abs=5e-4)
+    assert gr["SE (補正)"] == pytest.approx(0.0179, abs=5e-4)
+    assert gr["SE (補正)"] == pytest.approx(gr["SE (素)"] * 1.5, rel=0.01)
+    assert gr["平均 ÷ SE (補正)"] == pytest.approx(-0.8, abs=0.05)
+    # Random と TPE は同じパラメータを選ぶので、その行は比べない (0 除算も NaN も出ない)
+    same = [name for name in t3.index if name.startswith("Random − TPE")]
+    assert same and "同じパラメータ" in same[0]
+    assert t3.loc[same[0]].isna().all()
+    shown = texts(at)
+    assert any("同じ fold ごとに引いた差" in t and "1 回の fold の分け方の上での話" in t for t in shown)
+    assert any("素の SE は小さめに出る" in t and "選んだ後の値" in t for t in shown)
+    # 補正の式は「差の標準偏差 × √(1/k + 1/(k−1))」。素の SE に √(1/k + 1/(k−1)) を掛けると 0.67 倍になり、1.5 倍にはならない
+    assert any("差の標準偏差 × √(1/k + 1/(k−1))" in t and "保守的な目安" in t for t in shown)
+    assert not any("素の SE を √(1/k" in t for t in shown)
+    assert not at.exception, at.exception
+
+    # ④ 同じテスト点で比べる: 実験 10 の手数え (Grid だけ 2・Random だけ 10・両方 122・両方不正解 16)
+    at.button(key="tuning.test_button").click().run()
+    assert not at.exception, at.exception
+    result = at.session_state["tuning_result"]
+    assert set(result["held_out"]) == {"Grid", "Random", "TPE"}
+    assert result["test"] == {m: r.score for m, r in result["held_out"].items()}  # 学び直しは 1 回、同じ値
+    t4 = table_with(at, "確率 p").set_index("組")
+    row = t4.loc["Grid − Random"]
+    assert (row["両方正解"], row["A だけ正解"], row["B だけ正解"], row["両方不正解"]) == (122, 2, 10, 16)
+    assert row["確率 p"] == pytest.approx(0.0386, abs=5e-4)
+    same4 = [name for name in t4.index if name.startswith("Random − TPE")]
+    assert same4 and "同じパラメータ" in same4[0]
+    assert t4.loc[same4[0]]["確率 p"] is None or math.isnan(t4.loc[same4[0]]["確率 p"])
+    shown = texts(at)
+    assert any("片方だけが当てた点の数" in t and "2 対 10 なら p = 0.039" in t for t in shown)
+    assert any("テストを見て設定を選び直さない" in t for t in shown)
+    assert_curve_and_test_notes(shown)  # T-1 の文は変えていない
+
+
+@pytest.mark.claim("T-3")
+def test_paired_table_needs_two_methods():
+    """T-3。出典: .team/sp/stageB/B1/plan.md 4-1 (手法が 1 つだけなら表を出さない)。"""
+    at = open_page(DT)
+    at.sidebar.pills(key="tuning.methods").set_value(["Random"]).run()
+    run_search(at)
+    assert not [d for d in at.dataframe if "平均 ÷ SE (補正)" in d.value.columns]
+    assert not any("同じ fold ごとに引いた差" in t for t in texts(at))
+    at.sidebar.pills(key="tuning.methods").set_value(["Grid", "Random"]).run()
+    run_search(at)
+    assert len([d for d in at.dataframe if "平均 ÷ SE (補正)" in d.value.columns]) == 1
+
+
+@pytest.mark.claim("T-4")
+def test_point_table_not_shown_for_roc_auc():
+    """T-4。出典: .team/sp/stageB/B1/plan.md 4-1 (ROC AUC では点ごとの正解が決まらない)。"""
+    at = open_page(DT)
+    at.sidebar.radio(key="tuning.scoring").set_value("roc_auc").run()
+    run_search(at)
+    at.button(key="tuning.test_button").click().run()
+    assert not at.exception, at.exception
+    held = at.session_state["tuning_result"]["held_out"]
+    assert all(r.correct is None for r in held.values())
+    assert not [d for d in at.dataframe if "確率 p" in d.value.columns]
+    assert any("点ごとの正解が決まらない" in c.value for c in at.caption)
+    assert any("± SE" in d.value.columns for d in at.dataframe)  # 既存の表は出る
+
+
+def small_data_infos(at: AppTest) -> list[str]:
+    return [str(e.value) for e in at.sidebar.info if "葉の最小サンプル数が" in str(e.value) or "近傍の数が" in str(e.value)]
+
+
+@pytest.mark.claim("T-5")
+def test_sidebar_leaf_note_only_when_range_reaches_threshold():
+    """T-5。出典: .team/sp/stageB/B1/plan.md 4-2 (しきい値 floor(n_max/2) + 1。最小設定の k=10 で 12)。"""
+    # 最小設定 (Moons n=50・テスト 0.5 → 訓練 25 点・k=10): fold の訓練側は最大 23 点 → 12 以上で 1 枚の葉のまま
+    at = open_page(DT, **{"data.n_samples": 50, "data.test_size": 0.5})
+    at.sidebar.radio(key="tuning.n_splits").set_value(10).run()
+    notes = small_data_infos(at)
+    assert len(notes) == 1
+    assert "葉の最小サンプル数が 12 以上" in notes[0] and "最大 23 点" in notes[0]
+    assert "探索範囲 1–50 のうち 12〜50" in notes[0] and "平らな領域" in notes[0]
+    assert "これより手前でも起こりうる" in notes[0]
+    assert not at.sidebar.warning or all("葉の最小" not in w.value for w in at.sidebar.warning)  # 失敗ではなく注意
+    # 既定 (n=500 → 訓練 350 点) ではしきい値 (k=5 で 141) が範囲 1–50 の外 → 出ない
+    at2 = open_page(DT, **{"data.n_samples": 500})
+    assert not small_data_infos(at2)
+
+
+@pytest.mark.claim("T-6")
+def test_sidebar_neighbors_note_depends_on_weights():
+    """T-6。出典: .team/sp/stageB/B1/plan.md 4-2 (k-NN は uniform のときだけ。しきい値 = n_max)。"""
+    at = open_page(KNN, **{"data.n_samples": 50, "data.test_size": 0.5})
+    at.sidebar.radio(key="tuning.n_splits").set_value(10).run()
+    notes = small_data_infos(at)
+    assert len(notes) == 1 and "近傍の数が 23 以上" in notes[0] and "探索範囲 1–50 のうち 23〜50" in notes[0]
+    weights = next(s for s in at.sidebar.selectbox if s.label.startswith("投票の重み"))
+    weights.set_value("distance").run()
+    assert not small_data_infos(at)  # distance では多数派だけにならない (この規則は成り立たない)

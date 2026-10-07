@@ -18,12 +18,12 @@ from common.data import current_config, load_data, render_data_card
 from data.generator import DataConfig, class_balance, is_imbalanced
 from models import MODEL_REGISTRY
 from models.base import Bounds, PlotContext
-from tuning import plots
+from tuning import compare, plots, small_data
 from tuning.budget import Budget, budget_for
 from tuning.evaluate import compute_surface, make_cv
 from tuning.records import METHODS, Surface, TrialRecord, TuningConfig
 from tuning import runner
-from tuning.runner import best_trials, run_search, test_scores
+from tuning.runner import best_trials, held_out_results, run_search
 from tuning.space import ParamSpec, resolve_params
 
 RESULT_KEY = "tuning_result"
@@ -83,7 +83,58 @@ TEST_NOTES = (
     "残らなくなる。だからテストは最後に 1 回だけ見る。\n"
     "- テストデータも有限: 誤差棒は手法ごとのテストスコアの不確かさ（±1 SE）。手法どうしは同じテスト点で"
     "評価しているので、差があるかどうかは対応のある比較（片方の手法だけが当てたテスト点の数）で見る必要があり、"
-    "誤差棒の重なりだけでは決められない。"
+    "誤差棒の重なりだけでは決められない。下の表「同じテスト点で比べる」が、その数え方。"
+)
+
+#: ③ の表「手法どうしの差」の説明。SE (標準誤差) = 差の標準偏差 ÷ √k だけが式。fold は独立でないので素の SE は小さめ、
+#: 補正した SE = 差の標準偏差 × √(1/k + 1/(k−1)) (素の SE の約 1.5 倍、k=5)。最良どうしは選んだ後の値 (勝者の呪い)。tests/test_tuning_compare.py
+# claim: T-3
+PAIRED_NOTES = (
+    "- 比べているのは、各手法の最良どうしを **同じ fold ごとに引いた差** (A − B)。fold の難しさは 2 つの手法に共通なので、"
+    "差を取るとその分が打ち消される (対応のある比較)。\n"
+    "- **SE (標準誤差)** = 差の標準偏差 ÷ √k (k は fold の数)。平均の差がどれくらい揺れうるかの目安。"
+    "ただし fold の学習用データは互いに重なっていて fold は独立ではないので、素の SE は小さめに出る。"
+    "**補正した SE** は、それを埋め合わせるために 差の標準偏差 × √(1/k + 1/(k−1)) としたもの (素の SE の約 1.5 倍、k=5)。"
+    "実測のばらつきに一致させるものではなく、保守的な目安。\n"
+    "- 「平均 ÷ SE (補正)」の大きさが 2 より小さければ、差は偶然の範囲かもしれない。"
+    "2 を超えても、各手法の最良は多数の候補から選んだ後の値で偶然の上振れを含む (④の勝者の呪い) ので、本物の差とは限らない。\n"
+    "- これは 1 回の fold の分け方の上での話。探索のシードを変えて再実行すると変わりうる。"
+    "k = 3 では fold が 3 つしかなく、SE 自体が不安定。"
+)
+#: ④ の表「同じテスト点で比べる」の説明。p は厳密な二項 (両側、p = 1/2)。T-4 の例 (2 対 10 で 0.039) は
+#: docs/experiments.md 実験 10 の手数えと同じ数字。tests/test_tuning_compare.py
+# claim: T-4
+TEST_PAIRED_NOTES = (
+    "- 2 つの設定は **同じテスト点** で評価している。誤差棒の重なりでは決められず、"
+    "**片方だけが当てた点の数** を見る (対応のある比較。A は組の左の手法、B は右の手法)。\n"
+    "- 差が偶然なら、「A だけ正解」と「B だけ正解」は半々に近いはず。確率 p は、公平なコインを (A だけ + B だけ) 回投げたとき、"
+    "この偏り以上が偶然だけで出る確率 (厳密な二項、両側)。例: 2 対 10 なら p = 0.039。\n"
+    "- p はこの設定とこのテスト点についての話で、データの分け方を変えたときの揺れは含まない。"
+    "組が 3 つあるので、偶然の当たりも出やすい。p が小さくても、テストを見て設定を選び直さない。"
+)
+TEST_PAIRED_AUC_CAPTION = ("ROC AUC では、点ごとの正解が決まらないので、この比較は出さない。"
+                           "正解率に切り替えて探索し直すと確かめられる。")
+SAME_PARAMS_LABEL = "同じパラメータ (比べない)"
+#: サイドバーの注意 (N11)。「必ず起きる」領域だけを出す十分条件で、これより手前でも起こりうる (全部は検出しない)。
+#: テンプレートは .format で埋める (f-string にしない)。tests/test_tuning_small_data.py
+# claim: T-5
+SMALL_DATA_LEAF_NOTE = (
+    "葉の最小サンプル数が {threshold} 以上だと、検証 fold の訓練側は最大 {n_max} 点で、分割した 2 つの葉が"
+    " {threshold} 点ずつ要る ({threshold} × 2 > {n_max}) ため、木は分割できない。検証の予測は 1 クラスだけになり、"
+    "正解率は多数派クラスの割合になる。{tail}少なくともここから先はそうなる (これより手前でも起こりうる)。"
+)
+# claim: T-6
+SMALL_DATA_NEIGHBORS_NOTE = (
+    "近傍の数が {threshold} 以上だと、検証 fold の訓練側は最大 {n_max} 点で、投票が訓練側の全点で行われる"
+    " (重みが一様のとき)。どの点も同じ多数派クラスと予測され、正解率は多数派クラスの割合になる。"
+    "{tail}少なくともここから先はそうなる (これより手前でも起こりうる)。"
+)
+SMALL_DATA_AXIS_TAIL = "探索範囲 {lo}–{hi} のうち {threshold}〜{hi} はこの領域で、全探索マップでは平らな領域として見える。"
+SMALL_DATA_FIXED_TAIL = "固定した値 {value} はこの領域なので、すべての評価がこの定数の予測になる。"
+#: N12 の文 (配線は段階 C。T-7 もそのとき登録する)。f-string にしない。
+SMALL_CLASS_NOTE = (
+    "訓練データの中で一番少ないクラスが {smallest} 点で、k = {k} より少ない。fold に少数派が入らないものができる。"
+    "ROC AUC では、その fold の評価が計算できず NaN になる。正解率では、fold ごとの点数が不安定になる。"
 )
 
 
@@ -359,6 +410,51 @@ def test_se_caption(scoring: str, n_test: int) -> str:
             "大きめに出る。誤差棒の中心と表の値は、観測したスコアのまま。")
 
 
+def paired_fold_table(best: dict[str, TrialRecord]) -> pd.DataFrame:
+    """③ 手法どうしの差 (同じ fold ごとの差)。計算は tuning/compare.py。比べる組が無ければ空の表。"""
+    rows = []
+    for d in compare.pairwise_fold_differences(best):
+        pair = f"{d.a} − {d.b}"
+        if d.same_params:
+            rows.append({"組": f"{pair}: {SAME_PARAMS_LABEL}", "差の平均 (A − B)": None, "SE (素)": None,
+                         "SE (補正)": None, "平均 ÷ SE (補正)": None})
+            continue
+        ratio = d.mean / d.se_corrected if d.se_corrected > 0 else None  # 差が全 fold で同じなら SE = 0。割らない
+        rows.append({"組": pair, "差の平均 (A − B)": d.mean, "SE (素)": d.se, "SE (補正)": d.se_corrected,
+                     "平均 ÷ SE (補正)": ratio})
+    return pd.DataFrame(rows)
+
+
+def point_counts_table(held_out: dict[str, Any], best: dict[str, TrialRecord]) -> pd.DataFrame:
+    """④ 同じテスト点で比べる。計算は tuning/compare.py。"""
+    rows = []
+    for c in compare.pairwise_point_counts(held_out, best):
+        pair = f"{c.a} − {c.b}"
+        if c.same_params:
+            rows.append({"組": f"{pair}: {SAME_PARAMS_LABEL}", "両方正解": c.both, "A だけ正解": None,
+                         "B だけ正解": None, "両方不正解": c.neither, "確率 p": None})
+            continue
+        rows.append({"組": pair, "両方正解": c.both, "A だけ正解": c.only_a, "B だけ正解": c.only_b,
+                     "両方不正解": c.neither, "確率 p": c.p_value})
+    return pd.DataFrame(rows)
+
+
+def small_data_messages(model_class_name: str, specs: list[ParamSpec], fixed: dict[str, Any], y_train: np.ndarray,
+                        n_splits: int, seed: int) -> list[str]:
+    """サイドバーの注意 (N11)。範囲は変えず、「必ず 1 クラスだけの予測になる」領域がある設定のときだけ文を返す。"""
+    by = {s.name: s for s in specs}
+    out = []
+    for n in small_data.small_data_notes(model_class_name, specs, fixed, y_train, n_splits, seed):
+        template = SMALL_DATA_LEAF_NOTE if n.rule == "leaf" else SMALL_DATA_NEIGHBORS_NOTE
+        if n.where == "axis":
+            tail = SMALL_DATA_AXIS_TAIL.format(lo=fmt_value(by[n.param].low), hi=fmt_value(by[n.param].high),
+                                               threshold=n.threshold)
+        else:
+            tail = SMALL_DATA_FIXED_TAIL.format(value=fmt_value(fixed[n.param]))
+        out.append(template.format(threshold=n.threshold, n_max=n.n_fold_train_max, tail=tail))
+    return out
+
+
 def eta_levers(n_trials: int, min_trials: int, n_splits: int, surface_on: bool) -> list[str]:
     """推定時間が長いときに示す、いま使える短縮のしかた。"""
     levers = []
@@ -471,6 +567,8 @@ with st.sidebar:
         "探索のシード", 0, 10_000, 0, key="tuning.seed", persist_state=PS,
         help="CV の分け方と Random/TPE の乱数の両方を決める。変えて再実行すると、手法の順位が入れ替わるか確かめられる",
     ))
+    for note in small_data_messages(cls.__name__, axis_specs, fixed, y_train, int(n_splits), search_seed):
+        st.info(note)
     want_surface = st.checkbox(
         f"{SURFACE_LABEL}も計算する", value=budget.surface_default, key=f"{ns}.surface", persist_state=PS,
         help="粗い固定グリッドの全点を交差検証した参考値 (比較用の背景。探索手法はこれを知らない)。"
@@ -754,6 +852,14 @@ def show_search_result(result: dict[str, Any]) -> None:
         if surface is not None:
             st.caption(f"{SURFACE_LABEL}の最良: {plots.format_params(surface.best_params)} → "
                        f"{surface.best_score:.3f}")
+    paired = paired_fold_table(best_trials(shown))
+    if not paired.empty:
+        st.markdown("**手法どうしの差 (同じ fold どうしの差)**")
+        st.dataframe(paired, hide_index=True, column_config={
+            c: st.column_config.NumberColumn(format="%.3f")
+            for c in ("差の平均 (A − B)", "SE (素)", "SE (補正)")
+        } | {"平均 ÷ SE (補正)": st.column_config.NumberColumn(format="%.1f")})
+        st.markdown(PAIRED_NOTES)
     if surface is not None:
         st.caption("レース図の破線 (grid-search max) は、粗い格子の上での最良の CV スコア (1 通りの fold 分割による"
                    "ノイズを含む推定値)。探索手法がこの線を超えることもある。±1 fold 標準偏差以内の差は偶然の範囲かもしれない"
@@ -833,7 +939,9 @@ with tab_test:
         if st.button("テストデータで評価する", type="primary", disabled=rdata.test_size == 0,
                      key="tuning.test_button"):
             Xtr, Xte, ytr, yte = load_data(rdata)
-            result["test"] = test_scores(rcfg, best_trials(result["trials"]), Xtr, ytr, Xte, yte)
+            # 学び直しは 1 回: スコアと「各テスト点を当てたか」を同じ予測から作る
+            result["held_out"] = held_out_results(rcfg, best_trials(result["trials"]), Xtr, ytr, Xte, yte)
+            result["test"] = {m: r.score for m, r in result["held_out"].items()}
         if result.get("test"):
             if rdata.spec().is_real:
                 st.caption("class 0 / class 1 が何を指すかは、上の「データについて」を参照。")
@@ -855,6 +963,15 @@ with tab_test:
                 })
                 n_test = len(y_te)
                 st.caption(test_se_caption(rcfg.scoring, n_test))
+            if rcfg.scoring == "accuracy":
+                counts = point_counts_table(result.get("held_out", {}), best)
+                if not counts.empty:
+                    st.markdown("**同じテスト点で比べる**")
+                    st.dataframe(counts, hide_index=True, column_config={
+                        "確率 p": st.column_config.NumberColumn(format="%.3f")})
+                    st.markdown(TEST_PAIRED_NOTES)
+            else:
+                st.caption(TEST_PAIRED_AUC_CAPTION)
             st.markdown(TEST_NOTES)
         elif rdata.test_size > 0:
             st.caption("ボタンを押すと、各手法の最良パラメータをテストデータで評価します。")
