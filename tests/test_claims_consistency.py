@@ -10,7 +10,8 @@ ID で突き合わせる。**ID の突き合わせだけ**を見る。主張の�
 - K3: registry の ID は、どこかから 1 回は参照されている (孤児の禁止)。
 - K4: `claim` マーカーが付いたテストは、docstring に出典 (「出典」の語か AD の決定番号) を持つ。ファイル名だけでは通さない。
 - K5: registry の fragments (数値の主張は必須。文の主張も、短い決め手の語句を持てる) は、その ID の `claim:` コメントがある
-  文書の同じ行に、断片が 1 語一致 (空白を除く) で含まれる。
+  文書の同じ行に、断片が 1 語一致 (空白を除く) で含まれる。コメントだけの行が表の直後 (空行を挟まない) にあるときは、
+  その表の各行も「同じ行」の候補にする (表の中の数値を守る。表の行末のコメントが GitHub の表を壊さないかは未確認なので、コメントは表の外に置く)。
 - K6: 古い言い方 (registry の FORBIDDEN_PHRASES) が、文書 (docs/experiments.md・README)・UI (app_pages・models) に無い。
 - K7: 空振り防止。走査が壊れて 0 件のまま通ることを防ぐ。
 - 形: `claim` マーカーの引数は文字列の ID だけ (引数なし・文字列でない値は名指しで落ちる)。数えるのは `test_*` の関数と
@@ -177,13 +178,32 @@ def ui_attachment_violations(text: str, path: str) -> list[str]:
     return out
 
 
+def _table_rows_above(lines: list[str], i: int, pattern: re.Pattern) -> list[str]:
+    """lines[i] が `claim:` コメントだけの行で、その直前 (空行を挟まない) に `|` で始まる表の行が続くなら、その表の行 (上へ連なる分)。"""
+    if lines[i].strip() == "" or pattern.sub("", lines[i]).strip() != "":
+        return []  # 文や表の行の行末についたコメントは、その行だけを見る (今までどおり)
+    rows = []
+    j = i - 1
+    while j >= 0 and lines[j].lstrip().startswith("|"):
+        rows.append(lines[j])
+        j -= 1
+    return rows
+
+
 def scan_comment_lines(text: str, pattern: re.Pattern) -> dict[str, list[str]]:
-    """ID → その `claim:` コメントがある行の全文 (K5 が、同じ行に数値の断片があるかを見る)。"""
+    """ID → その `claim:` コメントがある行の全文 (K5 が、同じ行に数値の断片があるかを見る)。
+
+    コメントだけの行 (`<!-- claim: X1-5 -->`) が表の直後 (空行を挟まない) にあるときは、その表の各行も 1 行ずつ別の
+    行として加える (断片は 1 つの表の行の中になければ足りない。隣の行にまたがる偶然の一致で通らない)。
+    表に隣り合わないコメントだけの行は、今までどおり、その行だけを見る (離れた段落や表には広がらない)。
+    """
     found: dict[str, list[str]] = {}
-    for line in text.split("\n"):
+    lines = text.split("\n")
+    for i, line in enumerate(lines):
         for match in pattern.finditer(line):
+            places = [line, *_table_rows_above(lines, i, pattern)]
             for claim_id in _split_ids(match.group(1)):
-                found.setdefault(claim_id, []).append(line)
+                found.setdefault(claim_id, []).extend(places)
     return found
 
 
@@ -512,6 +532,44 @@ def test_negative_control_k6_forbidden_phrase():
 def test_scan_comment_lines_returns_the_whole_line():
     text = "前の行\n数値 0.758 の段落 <!-- claim: S5 -->\n次の行 0.999\n"
     assert scan_comment_lines(text, DOC_COMMENT) == {"S5": ["数値 0.758 の段落 <!-- claim: S5 -->"]}
+
+
+TABLE = "| 手法 | 最良 CV | テスト |\n|---|---|---|\n| Grid | 0.945 | 0.649 |\n| Random | 0.936 | 0.726 |"
+
+
+def test_scan_comment_lines_adds_the_table_right_above_a_standalone_comment():
+    """表の直後 (空行なし) のコメントだけの行は、その表の各行を 1 行ずつ別の候補にする。"""
+    found = scan_comment_lines(f"前の段落\n\n{TABLE}\n<!-- claim: X1-5 -->\n次の段落 9.99\n", DOC_COMMENT)
+    assert found == {"X1-5": ["<!-- claim: X1-5 -->", *reversed(TABLE.split("\n"))]}, found
+
+
+def test_scan_comment_lines_does_not_widen_beyond_an_adjacent_table():
+    """負の対照: 空行を挟む・文の行末・表の途中・文の直後のコメントは、今までどおりコメントの行だけを見る。"""
+    blank = scan_comment_lines(f"{TABLE}\n\n<!-- claim: X1-5 -->\n", DOC_COMMENT)
+    assert blank == {"X1-5": ["<!-- claim: X1-5 -->"]}, blank
+    after_text = scan_comment_lines(f"{TABLE}\n\n段落 0.945\n<!-- claim: X1-5 -->\n", DOC_COMMENT)
+    assert after_text == {"X1-5": ["<!-- claim: X1-5 -->"]}, after_text
+    tail = scan_comment_lines(f"{TABLE}\n本文 0.5 <!-- claim: X1-5 -->\n", DOC_COMMENT)
+    assert tail == {"X1-5": ["本文 0.5 <!-- claim: X1-5 -->"]}, tail  # 文の行末は表に広げない
+    row_tail = scan_comment_lines("| Grid | 0.945 | <!-- claim: X1-5 -->\n| Random | 0.936 |\n", DOC_COMMENT)
+    assert row_tail == {"X1-5": ["| Grid | 0.945 | <!-- claim: X1-5 -->"]}, row_tail  # 表の行末は、その行だけ (今までどおり)
+    middle = scan_comment_lines("| a | 1 |\n<!-- claim: X1-5 -->\n| b | 2 |\n", DOC_COMMENT)
+    assert middle == {"X1-5": ["<!-- claim: X1-5 -->", "| a | 1 |"]}, middle  # 下の表の行は含めない
+
+
+def test_negative_control_k5_number_in_a_table():
+    """表の数値を直したのに文書の ID の断片が古いままなら落ちる。断片は 1 つの表の行の中になければならない。"""
+    registry = {"X1-5": {"kind": "number", "summary": "x", "required": ("test", "doc"), "fragments": ("0.945", "0.649")}}
+    t, d = {"X1-5": ["tests/a.py::t"]}, {"X1-5": ["docs/e.md"]}
+    ok = scan_comment_lines(f"{TABLE}\n<!-- claim: X1-5 -->\n", DOC_COMMENT)
+    assert find_violations(registry, t, d, {}, doc_lines=ok) == []
+    changed = scan_comment_lines(f"{TABLE.replace('0.945', '0.944')}\n<!-- claim: X1-5 -->\n", DOC_COMMENT)  # 表の数値を 1 文字だけ変える
+    violations = find_violations(registry, t, d, {}, doc_lines=changed)
+    assert len(violations) == 1 and violations[0].startswith("K5 X1-5: 数値の断片「0.945」"), violations
+    detached = scan_comment_lines(f"{TABLE}\n\n<!-- claim: X1-5 -->\n", DOC_COMMENT)  # 空行を挟むと表を見ない
+    assert len(find_violations(registry, t, d, {}, doc_lines=detached)) == 2
+    across = {"X1-5": ["| Grid | 0.94", "5 | 0.649 |"]}  # 1 つの断片が隣の行にまたがる偶然では通らない
+    assert len(find_violations(registry, t, d, {}, doc_lines=across)) == 1
 
 
 def test_claim_id_format_accepts_x_with_two_numbers():
