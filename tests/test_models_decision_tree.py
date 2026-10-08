@@ -10,7 +10,7 @@ from model_grid import REAL_CASES, check_real_data, full_grid, param_id, real_ca
 
 from sklearn.tree import DecisionTreeClassifier
 
-from models.base import MODEL_REGISTRY, PlotContext
+from models.base import MODEL_REGISTRY, SELECTED_COLOR, PlotContext
 from models.decision_tree import DecisionTreeModel
 
 pytestmark = [pytest.mark.filterwarnings("error::FutureWarning"), pytest.mark.filterwarnings("error::DeprecationWarning")]
@@ -41,7 +41,7 @@ def _named_ctx():
 def test_tree_nodes_use_short_feature_names_and_original_units():
     ctx = _named_ctx()
     model = DecisionTreeModel().fit(ctx.X_train, ctx.y_train, {"max_depth": 2})
-    (_, fig, *_), = model.extra_plots(ctx)
+    (_, fig, *_), _ = model.extra_plots(ctx)
     texts = [t.get_text() for t in fig.axes[0].texts]
     splits = [t.splitlines()[0] for t in texts if "<=" in t]
     assert splits and all(s.startswith(("bill_length <=", "body_mass <=")) for s in splits)
@@ -75,12 +75,14 @@ def test_standardize_is_ignored(standardize):
 
 
 @pytest.mark.timing
+@pytest.mark.parametrize("params", [{}, {"max_depth": None}], ids=["default", "unlimited"])
 @pytest.mark.parametrize("test_size", [0.3, 0.0])
-def test_render_timing(test_size):
-    """性能目標 (AD-15): n=1000・既定の設定で、fit + 300×300 の境界 + 追加の図が DEFAULT_BUDGET 未満。"""
+def test_render_timing(test_size, params):
+    """性能目標 (AD-15): n=1000 で、fit + 300×300 の境界 + 追加の図 (木 + 深さの曲線の 2 本) が DEFAULT_BUDGET 未満。
+    既定の設定 (max_depth=3) に加えて、制限なし (葉が最も多くなる) でも確かめる (N13(b)。木の図の描画は葉の数にほぼ比例する)。"""
     for dataset in all_datasets():
-        elapsed = best_of(2, time_interaction, DecisionTreeModel, dataset, {}, test_size)
-        assert_within_budget(elapsed, DEFAULT_BUDGET, str((dataset, test_size)))
+        elapsed = best_of(2, time_interaction, DecisionTreeModel, dataset, params, test_size)
+        assert_within_budget(elapsed, DEFAULT_BUDGET, str((dataset, test_size, params)))
 
 
 @pytest.mark.parametrize("case", REAL_CASES, ids=real_case_id)
@@ -258,7 +260,7 @@ def test_tree_figure_colours_nodes_by_majority_class_and_purer_nodes_are_darker(
 
     ctx = load_ctx("Moons", n_samples=200)
     model = DecisionTreeModel().fit(ctx.X_train, ctx.y_train, {"max_depth": 4})
-    (_, fig, *_), = model.extra_plots(ctx)
+    (_, fig, *_), _ = model.extra_plots(ctx)
     boxes = [t.get_bbox_patch() for t in fig.axes[0].texts if t.get_bbox_patch() is not None]
     tree = model.estimator.tree_
     assert len(boxes) == tree.node_count
@@ -272,4 +274,273 @@ def test_tree_figure_colours_nodes_by_majority_class_and_purer_nodes_are_darker(
     for node, box in enumerate(boxes):
         majority = int(np.argmax(tree.value[node, 0]))
         assert to_rgb(box.get_facecolor()[:3]) == pytest.approx(to_rgb(CLASS_COLORS[majority]))
+    plt.close("all")
+
+
+# ---- N13(b): 深さが 4 を超える木は、木の図を深さ 4 で打ち切る ----
+def _expected_boxes(tree, max_depth=4):
+    """打ち切った木の図に出る枠の並び。ノード番号 (DepthFirst の行きがけ順に振られる) の昇順に、深さ <= max_depth は番号、
+    深さ == max_depth + 1 は "(...)" の枠 1 つ (None)、それより深いものは出ない。実装の再帰とは別の導き方。"""
+    depths = tree.compute_node_depths() - 1  # 根 = 0 (compute_node_depths は根を 1 と数える)
+    return [n if depths[n] <= max_depth else None for n in range(tree.node_count) if depths[n] <= max_depth + 1]
+
+
+def _tree_boxes(fig):
+    return [t for t in fig.axes[0].texts if t.get_bbox_patch() is not None]
+
+
+@pytest.mark.parametrize(("dataset", "n"), [("Circles", 1000), ("Circles", 400)])
+def test_unlimited_tree_figure_is_cut_at_depth_4_and_colours_match_full_tree(dataset, n):
+    """N13(b): 枠の数は全ノード数でなく、表示するノード + "(...)" の枠。各枠の文 (samples)・色 (クラス色と濃さ) が、
+    全体の木の同じノードのものと一致する。色の対応を 1 つずらす負の対照では、この比較が落ちる。"""
+    from matplotlib.colors import to_rgb
+
+    from models.base import CLASS_COLORS
+
+    ctx = load_ctx(dataset, n_samples=n)
+    model = DecisionTreeModel().fit(ctx.X_train, ctx.y_train, {"max_depth": None})
+    tree = model.estimator.tree_
+    assert model.estimator.get_depth() > 4 and tree.node_count > 20  # 前提: 4 の下に、"(...)" を複数出すだけの木がある
+    title, fig, caption = model.extra_plots(ctx)[0]
+    assert title == "決定木のツリー構造"
+    expected = _expected_boxes(tree)
+    boxes = _tree_boxes(fig)
+    assert expected.count(None) >= 2 and len(boxes) == len(expected) < tree.node_count
+    for text, node in zip(boxes, expected, strict=True):
+        if node is None:
+            assert "(...)" in text.get_text()
+            assert text.get_bbox_patch().get_facecolor()[:3] == pytest.approx(to_rgb("grey"))  # 無彩色のまま
+            continue
+        value = tree.value[node, 0]
+        p = value / value.sum()
+        purity = (p.max() - 0.5) / 0.5
+        assert f"samples = {tree.n_node_samples[node]}" in text.get_text()
+        box = text.get_bbox_patch()
+        assert to_rgb(box.get_facecolor()[:3]) == pytest.approx(to_rgb(CLASS_COLORS[int(np.argmax(p))]))
+        assert box.get_alpha() == pytest.approx(0.15 + 0.75 * purity)
+    assert "深さ 4 までを表示" in caption
+    assert f"実際の深さは {model.estimator.get_depth()}" in caption and f"葉は {model.estimator.get_n_leaves()} 枚" in caption
+    plt.close("all")
+
+
+def test_tree_figure_is_not_cut_when_depth_is_within_4():
+    """深さ <= 4 の木は省略しない: 枠の数 = 全ノード数で、"(...)" も説明の文も出ない (2 個組のまま)。"""
+    ctx = load_ctx("Moons", n_samples=200)
+    for params in ({"max_depth": 4}, {"max_depth": 2}):
+        model = DecisionTreeModel().fit(ctx.X_train, ctx.y_train, params)
+        item = model.extra_plots(ctx)[0]
+        assert len(item) == 2
+        boxes = _tree_boxes(item[1])
+        assert len(boxes) == model.estimator.tree_.node_count and not any("(...)" in t.get_text() for t in boxes)
+        plt.close("all")
+
+
+def test_penguins_unlimited_tree_stops_at_depth_5_and_is_cut_with_one_row_of_ellipses():
+    """実測: Penguins (既定の組) の制限なしの木は深さ 5 で育ち切る。深さ 4 で打ち切ると、深さ 5 のノードは "(...)" になる。"""
+    from model_grid import real_ctx
+
+    ctx = real_ctx("Palmer Penguins")
+    model = DecisionTreeModel().fit(ctx.X_train, ctx.y_train, {"max_depth": None})
+    assert model.estimator.get_depth() == 5
+    title, fig, caption = model.extra_plots(ctx)[0]
+    depths = model.estimator.tree_.compute_node_depths() - 1
+    assert len([t for t in _tree_boxes(fig) if "(...)" in t.get_text()]) == int((depths == 5).sum()) > 0
+    assert "実際の深さは 5" in caption
+    plt.close("all")
+
+
+# ---- N9: 深さと正解率の図 (M-DT-1 の主張そのもののテストは tests/test_models_decision_tree_curve.py) ----
+def _curve(model, ctx):
+    """追加の図の 2 本目 (title, fig, caption) を返す。"""
+    plots = model.extra_plots(ctx)
+    assert [p[0] for p in plots] == ["決定木のツリー構造", "深さと正解率"]
+    assert all(len(p) in (2, 3) for p in plots)
+    return plots[1]
+
+
+def _series(fig):
+    """図の線を凡例の名前でひく: {"train": ydata, "CV": ydata, "test": ydata}。★ の位置は star() で取る。"""
+    ax = fig.axes[0]
+    by_name = {}
+    for line in ax.lines:
+        label = line.get_label()
+        key = "train" if label == "train" else "test" if label.startswith("test") else "CV" if "CV" in label else None
+        if key:
+            by_name[key] = np.asarray(line.get_ydata())
+    return by_name
+
+
+def _star(fig):
+    """★ (marker が '*' の散布図) の (x, y)。"""
+    ax = fig.axes[0]
+    stars = [c for c in ax.collections if c.get_label().startswith("best CV")]
+    assert len(stars) == 1
+    (x, y), = stars[0].get_offsets()
+    return float(x), float(y)
+
+
+def _vlines(fig):
+    return [line for line in fig.axes[0].lines if len(set(line.get_xdata())) == 1 and len(line.get_xdata()) == 2]
+
+
+def _fit(ctx, params):
+    return DecisionTreeModel().fit(ctx.X_train, ctx.y_train, params)
+
+
+@pytest.mark.parametrize("test_size", [0.3, 0.0])
+def test_depth_curve_is_second_plot_with_caption(test_size):
+    """受け入れ 1: 2 本目に 3 個組で出る。test_size=0 では test の線も凡例も出ない。"""
+    ctx = load_ctx("Moons", n_samples=200, test_size=test_size)
+    title, fig, caption = _curve(_fit(ctx, {}), ctx)
+    lines = _series(fig)
+    assert ("test" in lines) is (test_size > 0)
+    assert set(lines) >= {"train", "CV"} and all(len(v) == 15 for v in lines.values())
+    assert caption.startswith("深さを増やすと")
+    plt.close("all")
+
+
+def test_depth_curve_minimal_and_small_minority_cases():
+    """受け入れ 1: 最小設定 (n=50、テスト 0.5 → 訓練 25 点) と、少数派が 1 点しかなくて CV が作れない場合でも動く。
+    CV が作れないときは CV の線も ★ も出さず、キャプションに理由を足す。"""
+    ctx = load_ctx("Moons", n_samples=50, test_size=0.5)
+    _, fig, caption = _curve(_fit(ctx, {}), ctx)
+    assert len(ctx.y_train) == 25 and "CV" in _series(fig)
+    assert "計算できません" not in caption
+    # 少数派が 1 点: 訓練データだけを差し替える (テストはそのまま)
+    y = np.zeros(len(ctx.y_train), dtype=int)
+    y[0] = 1
+    ctx1 = PlotContext(ctx.X_train, y, ctx.X_test, ctx.y_test, ctx.bounds)
+    model = DecisionTreeModel().fit(ctx1.X_train, ctx1.y_train, {"max_depth": 3})
+    _, fig1, caption1 = _curve(model, ctx1)
+    assert "CV" not in _series(fig1) and not any(c.get_label().startswith("best CV") for c in fig1.axes[0].collections)
+    assert "計算できません" in caption1 and "train" in _series(fig1)
+    plt.close("all")
+
+
+@pytest.mark.parametrize("seed", range(5))
+def test_star_is_cv_maximum_not_test_maximum_and_ties_go_to_shallower(seed):
+    """受け入れ 2 (AD-7 / AD-9): ★ は CV の線の最大で、同点なら最も浅い深さ。test の線の最大には従わない。
+    ★ の y 値は CV の線の最大値と一致し、x は CV が最大になる最初の深さ。"""
+    ctx = load_ctx("Moons", n_samples=300, seed=seed)
+    _, fig, _ = _curve(_fit(ctx, {"max_depth": 5}), ctx)
+    lines = _series(fig)
+    x, y = _star(fig)
+    assert y == pytest.approx(lines["CV"].max())
+    assert x == int(np.flatnonzero(lines["CV"] == lines["CV"].max())[0]) + 1  # 同点なら最も浅い
+    plt.close("all")
+
+
+def test_star_follows_cv_even_when_test_peaks_elsewhere():
+    """test の最大の深さと CV の最大の深さが違うデータで、★ が CV の方にあること (test では選ばない)。"""
+    found = False
+    for seed in range(20):
+        ctx = load_ctx("Moons", n_samples=300, seed=seed)
+        _, fig, _ = _curve(_fit(ctx, {}), ctx)
+        lines = _series(fig)
+        cv_best, test_best = int(np.argmax(lines["CV"])) + 1, int(np.argmax(lines["test"])) + 1
+        if cv_best != test_best:
+            assert _star(fig)[0] == cv_best
+            found = True
+        plt.close("all")
+    assert found  # 前提: 2 つの最大が食い違うシードがある
+
+
+def test_tie_is_marked_and_named_in_the_legend():
+    """同点が複数あるとき、凡例に "shallower = simpler" と同点の範囲が出る。"""
+    for seed in range(20):
+        ctx = load_ctx("Circles", n_samples=300, seed=seed)
+        _, fig, _ = _curve(_fit(ctx, {}), ctx)
+        lines = _series(fig)
+        if (lines["CV"] == lines["CV"].max()).sum() > 1:
+            legend = " ".join(t.get_text() for t in fig.axes[0].get_legend().get_texts())
+            assert "shallower = simpler" in legend
+            return
+    pytest.fail("前提: CV が同点になるシードがある")
+
+
+@pytest.mark.parametrize("depth", [3, 9])
+def test_current_depth_line_is_at_the_set_depth(depth):
+    ctx = load_ctx("Moons", n_samples=200)
+    _, fig, _ = _curve(_fit(ctx, {"max_depth": depth}), ctx)
+    (vline,) = _vlines(fig)
+    assert set(vline.get_xdata()) == {depth}
+    assert vline.get_color() == SELECTED_COLOR
+    legend = [t.get_text() for t in fig.axes[0].get_legend().get_texts()]
+    assert f"current: {depth}" in legend
+    plt.close("all")
+
+
+def test_unlimited_depth_line_is_at_the_actual_depth():
+    """受け入れ 2: max_depth=None のとき、縦線は実際の深さ (get_depth) にあり、凡例にも実際の深さが出る。"""
+    ctx = load_ctx("Moons", n_samples=200)
+    model = _fit(ctx, {"max_depth": None})
+    actual = model.estimator.get_depth()
+    assert actual <= 15
+    _, fig, _ = _curve(model, ctx)
+    (vline,) = _vlines(fig)
+    assert set(vline.get_xdata()) == {actual}
+    legend = [t.get_text() for t in fig.axes[0].get_legend().get_texts()]
+    assert f"current: None (actual depth {actual})" in legend
+    plt.close("all")
+
+
+def test_unlimited_depth_beyond_axis_keeps_axis_and_shows_arrow():
+    """実際の深さが 15 を超えるとき、軸は伸ばさず (1〜15 のまま)、縦線は引かず、右端の矢印と凡例の実際の深さで示す。"""
+    ctx = load_ctx("Circles", n_samples=2000)
+    model = _fit(ctx, {"max_depth": None})
+    actual = model.estimator.get_depth()
+    assert actual > 15  # 前提 (test_max_depth_is_the_exact_limit_and_none_is_unlimited と同じ)
+    _, fig, _ = _curve(model, ctx)
+    ax = fig.axes[0]
+    assert not _vlines(fig) and ax.get_xlim() == (0.5, 15.5)
+    assert len(ax.texts) == 1 and ax.texts[0].xycoords == "axes fraction" and ax.texts[0].arrow_patch is not None
+    assert f"current: None (actual depth {actual})" in [t.get_text() for t in ax.get_legend().get_texts()]
+    plt.close("all")
+
+
+def test_curve_uses_current_min_samples_leaf_and_criterion():
+    """深さ以外 (葉の最小サンプル数) は今の値のまま: min_samples_leaf=20 では、訓練の線が 1.0 に届かない。"""
+    ctx = load_ctx("Moons", n_samples=300)
+    train_1 = _series(_curve(_fit(ctx, {"min_samples_leaf": 1}), ctx)[1])["train"]
+    train_20 = _series(_curve(_fit(ctx, {"min_samples_leaf": 20}), ctx)[1])["train"]
+    assert train_1[-1] == 1.0 and train_20[-1] < 0.99
+    plt.close("all")
+
+
+def test_cv_line_never_sees_the_test_data():
+    """CV は訓練データだけで作る: テストデータを丸ごと別の値に差し替えても、CV と訓練の線は変わらない。
+    (混ぜていれば変わる。テストの線だけが変わる)"""
+    ctx = load_ctx("Moons", n_samples=300)
+    other = PlotContext(ctx.X_train, ctx.y_train, ctx.X_test[::-1] * 3.0, ctx.y_test, ctx.bounds)
+    model = _fit(ctx, {})
+    a, b = _series(_curve(model, ctx)[1]), _series(_curve(model, other)[1])
+    np.testing.assert_array_equal(a["CV"], b["CV"])
+    np.testing.assert_array_equal(a["train"], b["train"])
+    assert not np.array_equal(a["test"], b["test"])
+    plt.close("all")
+
+
+def test_curve_figure_has_no_probability_use():
+    """多クラスとの順序 (計画 §8-5): predict / score だけで書く。2 クラス専用の predict_proba を呼ばない。"""
+    import inspect
+
+    source = inspect.getsource(DecisionTreeModel._depth_curves) + inspect.getsource(DecisionTreeModel._plot_depth_curve)
+    assert "predict_proba" not in source and "[:, 1]" not in source
+
+
+@pytest.mark.parametrize("dataset", ["Moons", "Circles"])
+def test_cv_line_matches_sklearn_cross_validate(dataset):
+    """CV の線は、分けた 5 つの fold (層化・シャッフルあり・シード 0) の検証の正解率の平均。深さ 1・3・8・15 を、
+    sklearn の cross_validate (models を通さない入口) の値と照らす。訓練の線そのものとは別物 (深さ 15 で CV < 訓練)。
+    全深さ 1〜15 の照合は、ハンの別の入口 (tests/test_models_decision_tree_curve.py と scripts) が行う。"""
+    from sklearn.model_selection import StratifiedKFold, cross_validate
+
+    ctx = load_ctx(dataset, n_samples=300)
+    _, fig, _ = _curve(_fit(ctx, {}), ctx)
+    lines = _series(fig)
+    cv = StratifiedKFold(5, shuffle=True, random_state=0)
+    for d in (1, 3, 8, 15):
+        ref = cross_validate(DecisionTreeClassifier(random_state=0, max_depth=d), ctx.X_train, ctx.y_train, cv=cv)
+        assert lines["CV"][d - 1] == pytest.approx(ref["test_score"].mean())
+    assert lines["CV"][-1] < lines["train"][-1]
     plt.close("all")
