@@ -111,6 +111,7 @@ def staged_cv(estimator: GradientBoostingClassifier, X: np.ndarray, y: np.ndarra
 @register
 class GradientBoostingModel(BaseModel):
     name = "勾配ブースティング (Gradient Boosting)"
+    # claim: M-GB-1
     summary = (
         "浅い木を1本ずつ足し、それまでの予測の誤差 (損失の勾配) を次の木が修正していく。"
         "学習率を下げるほど多くの木が必要になり (learning_rate × 木の数 のトレードオフ)、木を増やしすぎると過学習する。"
@@ -123,16 +124,16 @@ class GradientBoostingModel(BaseModel):
         d = self.default_params
         n_estimators = st.select_slider(
             "木の数 (n_estimators)", N_ESTIMATORS_OPTIONS, value=d["n_estimators"], key=self.key("n_estimators"), persist_state="session",
-            help="1本ずつ誤差を修正していく回数。ランダムフォレストと違い、増やしすぎると過学習する",
+            help="1本ずつ誤差を修正していく回数。ランダムフォレストと違い、増やしすぎると過学習する",  # claim: M-GB-4
         )
         learning_rate = st.select_slider(
             "学習率 (learning_rate)", LEARNING_RATE_OPTIONS, value=d["learning_rate"],
             key=self.key("learning_rate"), persist_state="session",
-            help="1本の木の修正をどれだけ反映するか。小さいほど慎重に進み、その分多くの木が必要",
+            help="1本の木の修正をどれだけ反映するか。小さいほど慎重に進み、その分多くの木が必要",  # claim: M-GB-3
         )
         max_depth = st.slider(
             "木の深さ (max_depth)", 1, 8, d["max_depth"], key=self.key("max_depth"), persist_state="session",
-            help="ブースティングでは浅い木 (弱学習器) を使うのが基本。深さ 1 だと特徴量どうしの組み合わせを表せない",
+            help="ブースティングでは浅い木 (弱学習器) を使うのが基本。深さ 1 だと特徴量どうしの組み合わせを表せない",  # claim: M-GB-2
         )
         subsample = st.select_slider(
             "各木に使うデータの割合 (subsample)", SUBSAMPLE_OPTIONS, value=d["subsample"],

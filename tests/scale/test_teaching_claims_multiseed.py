@@ -434,9 +434,10 @@ def _rf_prefix_test_loss(model: RandomForestModel, X_test: np.ndarray, y_test: n
     return -(y_test * np.log(p) + (1 - y_test) * np.log(1 - p)).mean(axis=1)
 
 
+@pytest.mark.claim("M-RF-4")
 @guarded
 def test_C_rf_more_trees_do_not_overfit():
-    """C。n_estimators の help「多いほど平均がとれて予測が安定する。木を増やすこと自体で過学習が進むことはない (深い木の過学習そのものは残る) が、計算は重くなる」—
+    """出典: C。n_estimators の help「多いほど平均がとれて予測が安定する。木を増やすこと自体で過学習が進むことはない (深い木の過学習そのものは残る) が、計算は重くなる」—
     200 本の森を 1 回学習し、先頭 k 本の平均で予測したときのテストの log-loss について、
     「200 本の値 − k ≥ 25 での最小値 ≤ 0.05」(木を増やしても、テストの損失はほとんど悪くならない)。
     同じデータの GB は、下の test_C_gb_too_many_trees_overfits のとおり、木を増やしすぎるとテストの損失が悪くなる (対比)。
@@ -462,9 +463,10 @@ def test_C_rf_more_trees_do_not_overfit():
     assert all(a == 1.0 for a in train_acc.values()), {s: a for s, a in train_acc.items() if a != 1.0}
 
 
+@pytest.mark.claim("M-RF-5")
 @guarded
 def test_C_rf_oob_estimates_test_accuracy():
-    """C。bootstrap の help「各木を訓練データの復元抽出で学習する。選ばれなかった点 (OOB) で汎化性能を見積もれる」—
+    """出典: C。bootstrap の help「各木を訓練データの復元抽出で学習する。選ばれなかった点 (OOB) で汎化性能を見積もれる」—
     100 本 (既定) の森で、画面の「OOB 正解率」は訓練の正解率よりテストの正解率に近い: |OOB − テスト| < |訓練 − テスト|。
     データは上と同じ。OOB の予測が無い点 (どの木でも学習に使われた点) があると OOB 正解率はその点を除いて計算されるので、
     その数のシードごとの最大も出力する。
@@ -563,10 +565,11 @@ def test_C_gb_too_many_trees_overfits():
 GB_OOB_MAX_RATIO = 0.1  # 「訓練損失とほぼ同じ」の物差し: OOB と訓練の差が、OOB とテストの差の 1 割以下
 
 
+@pytest.mark.claim("M-GB-5")
 @guarded
 @pytest.mark.parametrize("subsample", [0.7, 0.3])  # 0.3 は UI で選べる最小の値
 def test_C_gb_oob_follows_train_loss_not_test_loss(subsample):
-    """C。キャプション「GB の OOB 推定 (sklearn の oob_scores_) は前の木の学習に使った点で測るので訓練損失とほぼ同じになり、
+    """出典: C。キャプション「GB の OOB 推定 (sklearn の oob_scores_) は前の木の学習に使った点で測るので訓練損失とほぼ同じになり、
     木の数選びには使えません (ランダムフォレストの OOB とは違います)」— subsample < 1・300 本で、木を足すごとの
     OOB の損失は、訓練の損失とほぼ同じで、テストの損失とは大きく違う:
     mean|OOB − 訓練| ≤ 0.1 × mean|OOB − テスト| (全段階の平均)。「テストより訓練に近い」だけでは、「ほぼ同じ」を確かめたことにならない。

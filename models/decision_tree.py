@@ -57,7 +57,7 @@ class DecisionTreeModel(BaseModel):
         unlimited = st.checkbox("max_depth を制限しない (None)", value=False, key=self.key("max_depth_none"), persist_state="session")
         max_depth = None if unlimited else st.slider(
             "木の深さ (max_depth)", 1, 15, d["max_depth"], key=self.key("max_depth"), persist_state="session",
-            help="深いほど細かく分割でき、訓練データにぴったり合う（過学習しやすい）",
+            help="深いほど細かく分割でき、訓練データにぴったり合う（過学習しやすい）",  # claim: M-DT-2
         )
         criterion = st.radio("分割基準 (criterion)", ["gini", "entropy"], horizontal=True, key=self.key("criterion"), persist_state="session")
         min_samples_leaf = st.slider(

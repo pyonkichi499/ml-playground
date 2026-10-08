@@ -59,7 +59,7 @@ class RandomForestModel(BaseModel):
         d = self.default_params
         n_estimators = st.select_slider(
             "木の数 (n_estimators)", N_ESTIMATORS_OPTIONS, value=d["n_estimators"], key=self.key("n_estimators"), persist_state="session",
-            help="多いほど平均がとれて予測が安定する。木を増やすこと自体で過学習が進むことはない (深い木の過学習そのものは残る) が、計算は重くなる",
+            help="多いほど平均がとれて予測が安定する。木を増やすこと自体で過学習が進むことはない (深い木の過学習そのものは残る) が、計算は重くなる",  # claim: M-RF-4
         )
         unlimited = st.checkbox("max_depth を制限しない (None)", value=d["max_depth"] is None,
                                 key=self.key("max_depth_none"), persist_state="session")
@@ -70,12 +70,12 @@ class RandomForestModel(BaseModel):
         max_features = st.radio(
             "分割ごとに候補にする特徴量の数 (max_features)", [1, 2], index=[1, 2].index(d["max_features"]),
             horizontal=True, key=self.key("max_features"), persist_state="session",
-            format_func=lambda v: "1 (ランダムに選ぶ)" if v == 1 else "2 (全部 = ただのバギング)",
+            format_func=lambda v: "1 (ランダムに選ぶ)" if v == 1 else "2 (全部 = ただのバギング)",  # claim: M-RF-1
             help="少ないほど木どうしが似なくなり (相関が下がり)、平均したときの効果が大きくなる",
         )
         bootstrap = st.checkbox(
             "ブートストラップ標本を使う (bootstrap)", value=d["bootstrap"], key=self.key("bootstrap"), persist_state="session",
-            help="各木を訓練データの復元抽出で学習する。選ばれなかった点 (OOB) で汎化性能を見積もれる",
+            help="各木を訓練データの復元抽出で学習する。選ばれなかった点 (OOB) で汎化性能を見積もれる",  # claim: M-RF-5
         )
         min_samples_leaf = st.slider(
             "葉ノードの最小サンプル数 (min_samples_leaf)", 1, 20, d["min_samples_leaf"],

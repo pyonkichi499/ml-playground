@@ -85,11 +85,11 @@ class MLPModel(BaseModel):
         activation = st.selectbox(
             "活性化関数 (activation)", list(ACTIVATION_LABELS), index=list(ACTIVATION_LABELS).index(d["activation"]),
             format_func=ACTIVATION_LABELS.get, key=self.key("activation"), persist_state="session",
-            help="非線形な関数を挟むことで曲がった境界が作れる。identity だと何層重ねても直線の境界になる",
+            help="非線形な関数を挟むことで曲がった境界が作れる。identity だと何層重ねても直線の境界になる",  # claim: M-MLP-4
         )
         alpha = st.select_slider(
             "L2 正則化の強さ (alpha)", ALPHA_OPTIONS, value=d["alpha"], format_func=_fmt_number,
-            key=self.key("alpha"), persist_state="session", help="大きいほど重みが小さく抑えられ、境界がなめらかになる (過学習を防ぐ)",
+            key=self.key("alpha"), persist_state="session", help="大きいほど重みが小さく抑えられ、境界がなめらかになる (過学習を防ぐ)",  # claim: M-MLP-3
         )
         learning_rate_init = st.select_slider(
             "学習率 (learning_rate_init)", LR_OPTIONS, value=d["learning_rate_init"], format_func=_fmt_number,
@@ -102,7 +102,7 @@ class MLPModel(BaseModel):
         )
         seed = int(st.number_input(
             "重みの初期値のシード (seed)", 0, 9999, d["seed"], step=1, key=self.key("seed"), persist_state="session",
-            help="損失が非凸なので、初期値が違うと別の局所解にたどり着き、境界の形も変わる",
+            help="損失が非凸なので、初期値が違うと別の局所解にたどり着き、境界の形も変わる",  # claim: M-MLP-2
         ))
         return {"n_layers": n_layers, "n_units": n_units, "activation": activation, "alpha": alpha,
                 "learning_rate_init": learning_rate_init, "max_iter": max_iter, "seed": seed}

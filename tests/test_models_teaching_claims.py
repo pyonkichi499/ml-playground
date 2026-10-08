@@ -102,9 +102,10 @@ def mlp_logit_on_unsaturated(model: MLPModel, grid: np.ndarray) -> tuple[np.ndar
 
 
 # ================================================================ k-NN
+@pytest.mark.claim("M-KNN-1")
 @pytest.mark.parametrize("dataset", ["Moons", "Linear Separable"])
 def test_knn_distance_weights_train_accuracy_is_one(dataset):
-    """knn.py weights の help:「訓練点の上では距離 0 の自分自身が決めるので、訓練正解率は 1 になる
+    """出典: knn.py weights の help:「訓練点の上では距離 0 の自分自身が決めるので、訓練正解率は 1 になる
     (ただし、同じ座標に違うラベルの点がある場合を除く)」(k 曲線のタイトル "distance weighting: train accuracy is
     1.0 for every k" も同じ主張)。
 
@@ -120,8 +121,9 @@ def test_knn_distance_weights_train_accuracy_is_one(dataset):
 
 
 # ================================================================ ロジスティック回帰
+@pytest.mark.claim("M-LR-1")
 def test_logreg_degree1_boundary_is_linear(moons):
-    """logistic_regression.py summary:「特徴量の重み付き和 z をシグモイド関数で確率に変換する線形モデル。
+    """出典: logistic_regression.py summary:「特徴量の重み付き和 z をシグモイド関数で確率に変換する線形モデル。
     多項式特徴量を足すと曲線の境界も引ける」— degree=1 なら z はアフィン (境界は直線)、degree=3 では違う。"""
     X_train, _, y_train, _, grid = moons
     for C in (0.01, 1.0, math.inf):
@@ -131,8 +133,9 @@ def test_logreg_degree1_boundary_is_linear(moons):
     assert fit_residual(model.estimator.decision_function(grid), grid, 1) > NONLINEAR
 
 
+@pytest.mark.claim("M-LR-2")
 def test_logreg_probability_is_sigmoid_of_z(moons):
-    """logistic_regression.py シグモイド図:「sigmoid 1 / (1 + e^(−z))」「z = 0 (decision boundary)」。"""
+    """出典: logistic_regression.py シグモイド図:「sigmoid 1 / (1 + e^(−z))」「z = 0 (decision boundary)」。"""
     X_train, _, y_train, _, grid = moons
     model = LogisticRegressionModel().fit(X_train, y_train, {"degree": 3, "C": 10.0})
     z = model.estimator.decision_function(grid)
@@ -140,8 +143,9 @@ def test_logreg_probability_is_sigmoid_of_z(moons):
     np.testing.assert_array_equal(model.predict(grid), (z > 0).astype(int))
 
 
+@pytest.mark.claim("M-LR-3")
 def test_logreg_l1_zeros_coefficients_l2_does_not(moons):
-    """logistic_regression.py penalty の help:「L2 は全ての係数を少しずつ小さくする。
+    """出典: logistic_regression.py penalty の help:「L2 は全ての係数を少しずつ小さくする。
     L1 は効かない係数をちょうど 0 にする (特徴選択)」。"""
     X_train, _, y_train, _, _ = moons
     # C=0.01 では 20 個すべてが 0 になり「効かない係数だけを 0 に」の確認にならないため使わない
@@ -154,8 +158,9 @@ def test_logreg_l1_zeros_coefficients_l2_does_not(moons):
         assert np.sum(np.abs(l2._coef) <= L2_NEAR_ZERO) == 0, C
 
 
+@pytest.mark.claim("M-LR-4")
 def test_logreg_smaller_C_shrinks_coefficients_l2(moons):
-    """logistic_regression.py C の help:「小さいほど係数を 0 に引き寄せて境界を単純にし、大きいほど訓練データに合わせる」。
+    """出典: logistic_regression.py C の help:「小さいほど係数を 0 に引き寄せて境界を単純にし、大きいほど訓練データに合わせる」。
     単調性は L2 に限る (L1 は反復上限 L1_MAX_ITER で打ち切るため保証されない)。"""
     X_train, _, y_train, _, _ = moons
     Cs = [0.001, 0.01, 0.1, 1.0, 10.0, 100.0]
@@ -165,10 +170,11 @@ def test_logreg_smaller_C_shrinks_coefficients_l2(moons):
 
 
 # ================================================================ ガウス生成モデル
+@pytest.mark.claim("M-GAU-1")
 @pytest.mark.parametrize("variant, degree_expected", [("lda", 1), ("nb", 2), ("qda", 2)])
 @pytest.mark.parametrize("dataset", ["Moons", "Linear Separable"])
 def test_gaussian_boundary_shape(dataset, variant, degree_expected):
-    """gaussian.py summary:「共通の楕円 (LDA) なら直線、クラス別 (QDA・Naive Bayes) なら 2 次曲線」。
+    """出典: gaussian.py summary:「共通の楕円 (LDA) なら直線、クラス別 (QDA・Naive Bayes) なら 2 次曲線」。
     事前確率をデータから推定した場合と手で決めた場合の両方で確認する。"""
     X_train, _, y_train, _, grid = load(dataset)
     for prior_from_data in (True, False):
@@ -180,8 +186,9 @@ def test_gaussian_boundary_shape(dataset, variant, degree_expected):
             assert fit_residual(f, grid, 1) > CURVED, prior_from_data
 
 
+@pytest.mark.claim("M-GAU-2")
 def test_gaussian_naive_bayes_covariance_is_diagonal(moons):
-    """gaussian.py VARIANT_LABELS:「Naive Bayes (軸に平行な楕円・クラス別)」— 共分散は対角 (特徴量が独立)。
+    """出典: gaussian.py VARIANT_LABELS:「Naive Bayes (軸に平行な楕円・クラス別)」— 共分散は対角 (特徴量が独立)。
     対照として QDA・LDA は非対角成分を持つ。"""
     X_train, _, y_train, _, _ = moons
     nb = GaussianModel().fit(X_train, y_train, {"variant": "nb"})
@@ -192,10 +199,11 @@ def test_gaussian_naive_bayes_covariance_is_diagonal(moons):
         assert any(abs(cov[0, 1]) > 1e-4 for _, cov in model.class_gaussians()), variant
 
 
+@pytest.mark.claim("M-GAU-3")
 @pytest.mark.parametrize("variant", ["nb", "lda", "qda"])
 @pytest.mark.parametrize("prior_from_data", [True, False])
 def test_gaussian_prediction_is_bayes_rule_on_drawn_gaussians(moons, variant, prior_from_data):
-    """gaussian.py class_gaussians の docstring:「予測はこの分布と事前確率だけで決まる」と module docstring
+    """出典: gaussian.py class_gaussians の docstring:「予測はこの分布と事前確率だけで決まる」と module docstring
     「ベイズの定理 P(y | x) ∝ P(y) p(x | y) でクラスを決める」— 図に描く楕円 (平均・共分散) と事前確率から
     predict_proba を再現できる。LDA × 手動の事前確率は、fit のコメントにある「covariance_ は事前確率で
     重み付けされている」罠を突くケース。"""
@@ -210,8 +218,9 @@ def test_gaussian_prediction_is_bayes_rule_on_drawn_gaussians(moons, variant, pr
     np.testing.assert_allclose(model.predict_proba(grid), 1 / (1 + np.exp(-log_odds)), atol=1e-12)
 
 
+@pytest.mark.claim("M-GAU-4")
 def test_gaussian_larger_prior1_labels_more_points_class1(moons):
-    """gaussian.py prior1 の help:「大きくすると、どちらとも言えない場所が class 1 と判定されやすくなり
+    """出典: gaussian.py prior1 の help:「大きくすると、どちらとも言えない場所が class 1 と判定されやすくなり
     境界が class 0 側へ動く」— class 1 と判定される格子点の数が prior1 に対して単調に増える。"""
     X_train, _, y_train, _, grid = moons
     for variant in ("nb", "lda", "qda"):
@@ -223,8 +232,9 @@ def test_gaussian_larger_prior1_labels_more_points_class1(moons):
         assert np.all(np.diff(counts) > 0), (variant, counts)
 
 
+@pytest.mark.claim("M-GAU-5")
 def test_gaussian_qda_reg_param_one_gives_unit_circles(moons):
-    """gaussian.py reg_param の help:「各クラスの楕円を円 (単位行列) に近づける」— reg_param = 1 でちょうど単位行列。"""
+    """出典: gaussian.py reg_param の help:「各クラスの楕円を円 (単位行列) に近づける」— reg_param = 1 でちょうど単位行列。"""
     X_train, _, y_train, _, _ = moons
     model = GaussianModel().fit(X_train, y_train, {"variant": "qda", "reg_param": 1.0})
     for _, cov in model.class_gaussians():
@@ -245,8 +255,9 @@ REG_PARAM_GRID = (0.0, 0.05, 0.2, 0.5, 0.9, 1.0)
 
 @pytest.mark.parametrize("config", [DataConfig("Moons", 200, 0.3, 0, 0.3), DataConfig("Palmer Penguins", None, None, 0, 0.3)],
                          ids=["moons", "penguins"])
+@pytest.mark.claim("M-GAU-5")
 def test_gaussian_qda_reg_param_shrinks_eigenvalue_ratio(config):
-    """gaussian.py reg_param の help:「各クラスの楕円を円 (単位行列) に近づける。点が少ないときの極端に細長い楕円を
+    """出典: gaussian.py reg_param の help:「各クラスの楕円を円 (単位行列) に近づける。点が少ないときの極端に細長い楕円を
     防ぐ」— 各クラスの共分散の固有値の比 (細長さ) は、reg_param を上げると狭義に減り、1 で 1 になる。
 
     理由 (決定的): 正則化後の共分散は (1 − r)Σ + rI なので、固有値は (1 − r)λ + r。比
@@ -261,8 +272,9 @@ def test_gaussian_qda_reg_param_shrinks_eigenvalue_ratio(config):
     np.testing.assert_allclose(per_class[:, -1], 1.0, atol=1e-12)
 
 
+@pytest.mark.claim("M-GAU-6")
 def test_gaussian_qda_small_reg_param_prevents_extremely_thin_ellipses():
-    """gaussian.py reg_param の help:「点が少ないときの極端に細長い楕円を防ぐ」— 片方の軸に
+    """出典: gaussian.py reg_param の help:「点が少ないときの極端に細長い楕円を防ぐ」— 片方の軸に
     ほとんど幅が無い (極端に細長い) データでは、reg_param = 0.05 だけで固有値の比が 10 倍以上小さくなる
     (実測: 各クラス 6500 前後 → 150〜195)。"""
     rng = np.random.default_rng(0)
@@ -276,8 +288,9 @@ def test_gaussian_qda_small_reg_param_prevents_extremely_thin_ellipses():
 
 
 # ================================================================ ランダムフォレスト
+@pytest.mark.claim("M-RF-1")
 def test_rf_one_tree_without_randomness_is_a_decision_tree(moons):
-    """random_forest.py max_features の選択肢「2 (全部 = ただのバギング)」と bootstrap の help — 木 1 本・
+    """出典: random_forest.py max_features の選択肢「2 (全部 = ただのバギング)」と bootstrap の help — 木 1 本・
     bootstrap なし・max_features=2 のフォレストは、同じ乱数で育てた 1 本の決定木そのもの。"""
     X_train, _, y_train, _, grid = moons
     rf = RandomForestModel().fit(X_train, y_train,
@@ -305,8 +318,9 @@ def fit_forest(data, bootstrap: bool, max_features: int) -> RandomForestModel:
                                                       "max_features": max_features, "max_depth": None})
 
 
+@pytest.mark.claim("M-RF-2")
 def test_rf_without_bootstrap_max_features_decides_whether_trees_are_identical(moons):
-    """random_forest.py caption:「bootstrap なし・特徴量 2 つでは全ての木がほぼ同じになり、平均の効果が消えます」の
+    """出典: random_forest.py caption:「bootstrap なし・特徴量 2 つでは全ての木がほぼ同じになり、平均の効果が消えます」の
     max_features の側 (bootstrap は「なし」に固定し、max_features だけを変えて、その効果だけを分けて見る)。
 
     - max_features=2: どの木も同じデータの同じ候補 (2 特徴量の全分割) から最良の分割を選ぶので、根の分割は全木で
@@ -326,8 +340,9 @@ def test_rf_without_bootstrap_max_features_decides_whether_trees_are_identical(m
     assert agreement >= RF_SAME_TREES_MIN_AGREEMENT, agreement
 
 
+@pytest.mark.claim("M-RF-2")
 def test_rf_with_all_features_bootstrap_decides_whether_trees_are_identical(moons):
-    """random_forest.py caption:「bootstrap なし・特徴量 2 つでは全ての木がほぼ同じになり、平均の効果が消えます」の
+    """出典: random_forest.py caption:「bootstrap なし・特徴量 2 つでは全ての木がほぼ同じになり、平均の効果が消えます」の
     bootstrap の側 (max_features は 2 に固定し、bootstrap だけを変えて、その効果だけを分けて見る)。
 
     - bootstrap なし: どの木も同じデータを見るので、根の分割は全木で 1 通り。
@@ -337,8 +352,9 @@ def test_rf_with_all_features_bootstrap_decides_whether_trees_are_identical(moon
     assert len(root_splits(fit_forest(moons, bootstrap=True, max_features=2))) >= 2
 
 
+@pytest.mark.claim("M-RF-3")
 def test_rf_forest_is_average_of_trees(moons):
-    """random_forest.py 図のタイトル「forest (average of n trees)」— フォレストの確率 = 各木の確率の平均。
+    """出典: random_forest.py 図のタイトル「forest (average of n trees)」— フォレストの確率 = 各木の確率の平均。
     (確率の平均と各木の予測クラスの投票は、葉が不純だと一部の点で食い違うため、ここでは平均だけを検証する)"""
     X_train, _, y_train, _, grid = moons
     rf = RandomForestModel().fit(X_train, y_train, {"n_estimators": 10})
@@ -347,10 +363,11 @@ def test_rf_forest_is_average_of_trees(moons):
 
 
 # ================================================================ 勾配ブースティング
+@pytest.mark.claim("M-GB-1")
 @pytest.mark.parametrize("learning_rate", [0.01, 0.1, 1.0])
 @pytest.mark.parametrize("max_depth", [1, 3, 8])
 def test_gb_train_loss_non_increasing(moons, learning_rate, max_depth):
-    """gradient_boosting.py summary:「それまでの予測の誤差 (損失の勾配) を次の木が修正していく」—
+    """出典: gradient_boosting.py summary:「それまでの予測の誤差 (損失の勾配) を次の木が修正していく」—
     subsample=1 では木を 1 本足すごとに訓練 log-loss は増えない (浮動小数点の誤差を除く)。
     一般に保証される性質ではなく、この設定 (Moons, seed 0, 学習率 3 通り × 深さ 3 通り) で確認したもの。"""
     X_train, _, y_train, _, _ = moons
@@ -363,8 +380,9 @@ def test_gb_train_loss_non_increasing(moons, learning_rate, max_depth):
     assert loss[0] - loss[-1] > 0.1, (learning_rate, max_depth, loss[0] - loss[-1])
 
 
+@pytest.mark.claim("M-GB-2")
 def test_gb_depth1_cannot_represent_feature_interactions(moons):
-    """gradient_boosting.py max_depth の help:「深さ 1 だと特徴量どうしの組み合わせを表せない」—
+    """出典: gradient_boosting.py max_depth の help:「深さ 1 だと特徴量どうしの組み合わせを表せない」—
     深さ 1 の決定関数は f(x1, x2) = g(x1) + h(x2) の加法形なので f(a,b) + f(c,d) = f(a,d) + f(c,b)。
     対照: 深さ 2 では成り立たない。"""
     X_train, _, y_train, _, grid = moons
@@ -379,8 +397,9 @@ def test_gb_depth1_cannot_represent_feature_interactions(moons):
     assert interaction(2) > 0.1
 
 
+@pytest.mark.claim("M-GB-3")
 def test_gb_smaller_learning_rate_needs_more_trees(moons):
-    """gradient_boosting.py learning_rate の help:「小さいほど慎重に進み、その分多くの木が必要」—
+    """出典: gradient_boosting.py learning_rate の help:「小さいほど慎重に進み、その分多くの木が必要」—
     同じ訓練 log-loss に達するまでの木の数は、学習率を下げるほど増える。"""
     X_train, _, y_train, _, _ = moons
     target = 0.3
@@ -393,8 +412,9 @@ def test_gb_smaller_learning_rate_needs_more_trees(moons):
     assert np.all(np.diff(needed) > 0), needed
 
 
+@pytest.mark.claim("M-GB-4")
 def test_gb_too_many_trees_overfits_example():
-    """gradient_boosting.py n_estimators の help:「ランダムフォレストと違い、増やしすぎると過学習する」。
+    """出典: gradient_boosting.py n_estimators の help:「ランダムフォレストと違い、増やしすぎると過学習する」。
 
     統計的な主張なので、これは「この seed (Moons, n=300, noise=0.4, seed 0, learning_rate=0.3) での事例」の確認。
     ノイズが大きく学習率も大きい設定で、テスト log-loss が途中で最小になり、500 本では最小値より 0.1 以上悪い。
@@ -408,9 +428,10 @@ def test_gb_too_many_trees_overfits_example():
 
 
 # ================================================================ MLP
+@pytest.mark.claim("M-MLP-4")
 @pytest.mark.parametrize("n_layers", [1, 3])
 def test_mlp_identity_activation_boundary_is_linear(moons, n_layers):
-    """mlp.py activation の help:「identity だと何層重ねても直線の境界になる」(ラベル「恒等関数 (identity) = 線形」)。
+    """出典: mlp.py activation の help:「identity だと何層重ねても直線の境界になる」(ラベル「恒等関数 (identity) = 線形」)。
     対照: ReLU は直線にならない。"""
     X_train, _, y_train, _, grid = moons
     for activation, linear in (("identity", True), ("relu", False)):
@@ -420,8 +441,9 @@ def test_mlp_identity_activation_boundary_is_linear(moons, n_layers):
         assert (residual < EXACT_TOL) if linear else (residual > NONLINEAR), (activation, residual)
 
 
+@pytest.mark.claim("M-MLP-2")
 def test_mlp_seed_changes_solution(moons):
-    """mlp.py seed の help:「損失が非凸なので、初期値が違うと別の局所解にたどり着き、境界の形も変わる」。"""
+    """出典: mlp.py seed の help:「損失が非凸なので、初期値が違うと別の局所解にたどり着き、境界の形も変わる」。"""
     X_train, _, y_train, _, grid = moons
     preds = [MLPModel().fit(X_train, y_train, {"seed": s, "max_iter": 200}).predict(grid) for s in range(3)]
     for i in range(3):
@@ -430,8 +452,9 @@ def test_mlp_seed_changes_solution(moons):
             assert np.mean(preds[i] != preds[j]) > 0.01, (i, j)
 
 
+@pytest.mark.claim("M-MLP-3")
 def test_mlp_large_alpha_shrinks_weights(moons):
-    """mlp.py alpha の help:「大きいほど重みが小さく抑えられ、境界がなめらかになる」— 両端 (1e-4 と 10) の比較。"""
+    """出典: mlp.py alpha の help:「大きいほど重みが小さく抑えられ、境界がなめらかになる」— 両端 (1e-4 と 10) の比較。"""
     X_train, _, y_train, _, _ = moons
 
     def weight_norm(alpha):
@@ -442,9 +465,10 @@ def test_mlp_large_alpha_shrinks_weights(moons):
 
 
 # ================================================================ SVM
+@pytest.mark.claim("M-SVM-1")
 @pytest.mark.parametrize("dataset", ["Moons", "Linear Separable"])
 def test_svm_kernel_draws_curved_boundaries(dataset):
-    """svm.py summary:「カーネルを使うと曲線の境界も引ける」— linear カーネルの決定関数は
+    """出典: svm.py summary:「カーネルを使うと曲線の境界も引ける」— linear カーネルの決定関数は
     アフィン (境界は直線)、rbf・poly カーネルはアフィンではない (曲線)。ロジスティック回帰の degree の主張と同じ形で確かめる
     (実測の相対残差: linear 約 3e-15、rbf 0.98〜1.06、poly 0.64〜0.75)。"""
     X_train, _, y_train, _, grid = load(dataset)

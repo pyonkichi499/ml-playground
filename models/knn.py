@@ -124,6 +124,7 @@ class KNNModel(BaseModel):
         weights = st.radio(
             "投票の重み (weights)", list(WEIGHT_LABELS), format_func=WEIGHT_LABELS.get, horizontal=True,
             key=self.key("weights"), persist_state="session",
+            # claim: M-KNN-1, X12-4
             help="distance にすると近い点ほど強く投票する。訓練点の上では距離 0 の自分自身が決めるので、"
                  "訓練正解率は 1 になる (ただし、同じ座標に違うラベルの点がある場合を除く)",
         )

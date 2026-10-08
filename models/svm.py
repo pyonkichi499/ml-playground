@@ -43,6 +43,7 @@ _REEMIT_REGISTRY: dict = {}
 @register
 class SVMModel(BaseModel):
     name = "サポートベクターマシン (SVM)"
+    # claim: M-SVM-1
     summary = "クラス間の「すき間 (マージン)」が最大になる境界を引く。カーネルを使うと曲線の境界も引ける。"
     default_params = {"kernel": "rbf", "C": 1.0, "gamma": 1.0, "degree": 3}
     scale_sensitive = True  # カーネル (距離・内積) が特徴量の単位で変わる (AD-14.4)

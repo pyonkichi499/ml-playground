@@ -168,8 +168,9 @@ def _truncated_accuracy(model, X, y, depth, pick):
     return float(np.mean(model.final_estimator.classes_[cls] == y))
 
 
+@pytest.mark.claim("M-DT-2")
 def test_cutting_one_tree_at_a_shallower_depth_never_raises_accuracy():
-    """1 本の深い木を深さ d で打ち切って予測すると、訓練正解率は d に対して減らない。必ず成り立つ性質:
+    """出典: decision_tree.py max_depth の help「深いほど細かく分割でき、訓練データにぴったり合う」。1 本の深い木を深さ d で打ち切って予測すると、訓練正解率は d に対して減らない。必ず成り立つ性質:
     分割は、子の多数派の数の和 ≥ 親の多数派の数 だから (自前の打ち切りの計算で確かめる)。
 
     対照: 各ノードのクラスに多数派ではなく少数派 (argmin) を使うと、正しい版と 1 か所だけ違うが、同じ確認が落ちる
@@ -186,9 +187,10 @@ def test_cutting_one_tree_at_a_shallower_depth_never_raises_accuracy():
     assert full == pytest.approx(float(np.mean(model.predict(ctx.X_train) == ctx.y_train)))
 
 
+@pytest.mark.claim("M-DT-2")
 @pytest.mark.parametrize("dataset", ["Moons", "Iris sepal"])
 def test_separate_fits_training_accuracy_does_not_decrease_with_depth(dataset):
-    """深さを変えて別々に fit したとき、訓練正解率が深さで減らない (help「深いほど…訓練データにぴったり合う」)。
+    """出典: 深さを変えて別々に fit したとき、訓練正解率が深さで減らない (help「深いほど…訓練データにぴったり合う」)。
 
     保証ではなく実測: 別々に fit した木は、浅い木の切り詰めとは限らない (同じ良さの分割がいくつもあるとき、選ばれる
     分割が変わる。70 通り × 深さの隣どうしの比較 14 回 = 980 回のうち 93 回で、切り詰めの性質が成り立たなかった。

@@ -29,6 +29,7 @@ def _format_C(c: float) -> str:
 @register
 class LogisticRegressionModel(BaseModel):
     name = "ロジスティック回帰 (Logistic Regression)"
+    # claim: M-LR-1
     summary = (
         "特徴量の重み付き和 z をシグモイド関数で確率に変換する線形モデル。"
         "多項式特徴量を足すと曲線の境界も引けるが、次数を上げるほど過学習しやすいので正則化 (C) で抑える。"
@@ -49,14 +50,14 @@ class LogisticRegressionModel(BaseModel):
         )
         C = st.select_slider(
             "正則化の逆数 (C)", C_OPTIONS, value=d["C"], format_func=_format_C, key=self.key("C"), persist_state="session",
-            help="小さいほど係数を 0 に引き寄せて境界を単純にし、大きいほど訓練データに合わせる。∞ は正則化なし",
+            help="小さいほど係数を 0 に引き寄せて境界を単純にし、大きいほど訓練データに合わせる。∞ は正則化なし",  # claim: M-LR-4
         )
         params: dict[str, Any] = {"degree": degree, "C": C}
         if not math.isinf(C):
             params["penalty"] = st.radio(
                 "正則化の種類 (penalty)", list(PENALTY_LABELS), format_func=PENALTY_LABELS.get,
                 horizontal=True, key=self.key("penalty"), persist_state="session",
-                help="L2 は全ての係数を少しずつ小さくする。L1 は効かない係数をちょうど 0 にする (特徴選択)",
+                help="L2 は全ての係数を少しずつ小さくする。L1 は効かない係数をちょうど 0 にする (特徴選択)",  # claim: M-LR-3
             )
         return params
 

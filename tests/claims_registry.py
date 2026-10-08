@@ -179,6 +179,137 @@ CLAIMS: dict[str, dict] = {
         "required": ("test", "ui"),
         "fragments": ("途中から頭打ち",),
     },
+    # モデルごとの教える主張 (テストの claim マーカー・models/*.py の `# claim:`)。「K>2」は多クラスの設計書 ① の「再検証」の列に当たるか
+    "M-LR-1": {
+        "kind": "text",
+        "summary": "重み付き和 z をシグモイドで確率にする線形モデル。degree = 1 なら境界は直線で、degree を上げると曲線になる",
+        "required": ("test", "ui"),  # K>2: 要 (K>2 は多項 / OvR)
+    },
+    "M-LR-2": {
+        "kind": "text",
+        "summary": "確率 = sigmoid(z) (図の題 \"sigmoid 1 / (1 + e^(−z))\")",
+        "required": ("test",),  # K>2: 要 (K>2 は図を出さない)。付け先なし (図の題)
+    },
+    "M-LR-3": {
+        "kind": "text",
+        "summary": "L1 は効かない係数をちょうど 0 にし、L2 は全部の係数を少しずつ小さくする",
+        "required": ("test", "ui"),  # K>2: 要 (L1 は OvR)
+    },
+    "M-LR-4": {
+        "kind": "text",
+        "summary": "C が小さいほど係数が 0 に近づく (L2。L1 は打ち切りがあり保証はない)",
+        "required": ("test", "ui"),  # K>2: 係数が K 行になる
+    },
+    "M-KNN-1": {
+        "kind": "text",
+        "summary": "weights = distance は、同じ座標に違うラベルの点が無ければ、訓練の正解率が 1 になる (「ただし」の側は X12-4)",
+        "required": ("test", "ui"),  # K>2: 変わらない
+    },
+    "M-GAU-1": {
+        "kind": "text",
+        "summary": "共通の楕円 (LDA) なら境界は直線、クラス別の楕円 (QDA・Naive Bayes) なら 2 次曲線になる",
+        "required": ("test", "ui"),  # K>2: 要 (対ごと)
+    },
+    "M-GAU-2": {
+        "kind": "text",
+        "summary": "Naive Bayes は共分散が対角 (軸に平行な楕円)",
+        "required": ("test", "ui"),  # K>2: 変わらない
+    },
+    "M-GAU-3": {
+        "kind": "text",
+        "summary": "予測は、図に描く分布と事前確率だけで決まる (ベイズの定理)",
+        "required": ("test",),  # K>2: 変わらない。付け先なし (docstring)
+    },
+    "M-GAU-4": {
+        "kind": "text",
+        "summary": "prior1 を大きくすると、どちらとも言えない場所が class 1 と判定されやすくなる",
+        "required": ("test", "ui"),  # K>2: 要 (K>2 は手動の事前確率を出さない)
+    },
+    "M-GAU-5": {
+        "kind": "text",
+        "summary": "reg_param は楕円を円 (単位行列) に近づける。1 でちょうど単位行列",
+        "required": ("test", "ui"),  # K>2: 変わらない
+    },
+    "M-GAU-6": {
+        "kind": "text",
+        "summary": "reg_param = 0.05 でも、極端に細長い楕円 (固有値の比) を 10 倍以上小さくする",
+        "required": ("test", "ui"),  # K>2: 変わらない。M-GAU-5 と同じ help の行
+    },
+    "M-RF-1": {
+        "kind": "text",
+        "summary": "木 1 本・bootstrap なし・特徴量を全部使う森は、同じ乱数の決定木そのもの",
+        "required": ("test", "ui"),  # K>2: 変わらない
+    },
+    "M-RF-2": {
+        "kind": "text",
+        "summary": "bootstrap なし・特徴量 2 つでは全部の木がほぼ同じになり、平均の効果が消える",
+        "required": ("test",),  # K>2: 変わらない。付け先なし (st.caption の行。定数に出すかは Models が決める)
+    },
+    "M-RF-3": {
+        "kind": "text",
+        "summary": "フォレストの確率 = 各木の確率の平均 (図の題 \"forest (average of n trees)\")",
+        "required": ("test",),  # K>2: 変わらない。付け先なし (図の題)
+    },
+    "M-RF-4": {
+        "kind": "text",
+        "summary": "木を増やすこと自体では過学習が進まない (scale のみ)",
+        "required": ("test", "ui"),  # K>2: 変わらない。scale のテストだけが支える
+    },
+    "M-RF-5": {
+        "kind": "text",
+        "summary": "OOB 正解率は、訓練よりテストの正解率に近い (scale のみ)",
+        "required": ("test", "ui"),  # K>2: 変わらない。scale のテストだけが支える
+    },
+    "M-GB-1": {
+        "kind": "text",
+        "summary": "木を足すごとに訓練 log-loss は増えない (subsample = 1 のとき。一般には保証されない)",
+        "required": ("test", "ui"),  # K>2: 損失が K クラスになる
+    },
+    "M-GB-2": {
+        "kind": "text",
+        "summary": "深さ 1 の木は、特徴量どうしの組み合わせを表せない",
+        "required": ("test", "ui"),  # K>2: 変わらない
+    },
+    "M-GB-3": {
+        "kind": "text",
+        "summary": "学習率を下げるほど、同じ訓練損失に届くまでに多くの木が要る",
+        "required": ("test", "ui"),  # K>2: 変わらない
+    },
+    "M-GB-4": {
+        "kind": "text",
+        "summary": "木を増やしすぎると過学習する (この設定の事例。統計的な主張)",
+        "required": ("test", "ui"),  # K>2: 変わらない
+    },
+    "M-GB-5": {
+        "kind": "text",
+        "summary": "GB の OOB 推定は訓練の損失とほぼ同じで、木の数選びには使えない (scale のみ)",
+        "required": ("test",),  # K>2: 変わらない。付け先なし (st.caption)。scale のテストだけが支える
+    },
+    "M-MLP-4": {
+        "kind": "text",
+        "summary": "活性化関数が identity なら、何層重ねても境界は直線",
+        "required": ("test", "ui"),  # K>2: 変わらない。plan の M-MLP-1。B3 の M-MLP-1 (損失曲線の注記) と衝突するので M-MLP-4 に改番 (提案)
+    },
+    "M-MLP-2": {
+        "kind": "text",
+        "summary": "初期値 (シード) が違うと別の局所解になり、境界の形も変わる",
+        "required": ("test", "ui"),  # K>2: 変わらない
+    },
+    "M-MLP-3": {
+        "kind": "text",
+        "summary": "alpha が大きいほど重みが小さく抑えられる",
+        "required": ("test", "ui"),  # K>2: 変わらない
+    },
+    "M-SVM-1": {
+        "kind": "text",
+        "summary": "linear カーネルは直線、rbf・poly は曲線の境界になる",
+        "required": ("test", "ui"),  # K>2: K>2 は one-vs-one
+    },
+    "M-DT-2": {
+        "kind": "text",
+        "summary": "木が深いほど訓練データに合う (深さを 1 上げても訓練の正解率は下がらない)",
+        "required": ("test", "ui"),  # K>2: 変わらない。plan の M-DT-1。B3 の M-DT-1 (CV の線) と衝突するので M-DT-2 に改番 (提案)
+    },
 }
 
 #: K6: 文書・UI に残ってはいけない古い言い方 (言い過ぎだったので AD-14.4 で訂正したもの)。(語句, 理由)。空白を除いて探す。

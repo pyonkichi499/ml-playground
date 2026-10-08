@@ -27,6 +27,7 @@ from models.base import (
 )
 from tuning.space import ParamSpec
 
+# claim: M-GAU-2
 VARIANT_LABELS = {
     "nb": "Naive Bayes (軸に平行な楕円・クラス別)",
     "lda": "LDA (共通の楕円)",
@@ -65,6 +66,7 @@ def _ellipse(mean: np.ndarray, cov: np.ndarray, n_sigma: float, **kwargs) -> Ell
 @register
 class GaussianModel(BaseModel):
     name = "ガウス生成モデル (Naive Bayes / LDA / QDA)"
+    # claim: M-GAU-1
     summary = (
         "各クラスのデータが正規分布 (楕円形の山) から生まれたと仮定し、ベイズの定理で確率を計算する生成モデル。"
         "楕円の形の仮定で境界が変わる: 共通の楕円 (LDA) なら直線、クラス別 (QDA・Naive Bayes) なら 2 次曲線。"
@@ -87,7 +89,7 @@ class GaussianModel(BaseModel):
             params["reg_param"] = st.slider(
                 "共分散の正則化 (reg_param)", 0.0, 1.0, d["reg_param"], step=0.05, key=self.key("reg_param"),
                 persist_state="session",
-                help="各クラスの楕円を円 (単位行列) に近づける。点が少ないときの極端に細長い楕円を防ぐ。"
+                help="各クラスの楕円を円 (単位行列) に近づける。点が少ないときの極端に細長い楕円を防ぐ。"  # claim: M-GAU-5, M-GAU-6
                      "reg_param は特徴量の単位に依存する (単位の大きい特徴量にはほとんど効かない)",
             )
         prior_from_data = st.checkbox(
@@ -100,7 +102,7 @@ class GaussianModel(BaseModel):
             params["prior1"] = st.slider(
                 "class 1 の事前確率 P(class 1)", 0.05, 0.95, d["prior1"], step=0.05, key=self.key("prior1"),
                 persist_state="session",
-                help="大きくすると、どちらとも言えない場所が class 1 と判定されやすくなり境界が class 0 側へ動く",
+                help="大きくすると、どちらとも言えない場所が class 1 と判定されやすくなり境界が class 0 側へ動く",  # claim: M-GAU-4
             )
         return params
 
