@@ -19,7 +19,7 @@ from pathlib import Path
 import pytest
 from streamlit.testing.v1 import AppTest
 
-from common.experiments_doc import EXPERIMENTS_PATH, load_experiments_markdown
+from common.experiments_doc import EXPERIMENTS_PATH, OVERVIEW_TITLE, load_experiments_markdown, split_experiments
 
 pytestmark = pytest.mark.filterwarnings(
     "error::FutureWarning", "error::DeprecationWarning", "error::PendingDeprecationWarning"
@@ -29,6 +29,7 @@ ROOT = Path(__file__).resolve().parents[1]
 APP = str(ROOT / "app.py")
 PAGE = "app_pages/experiments.py"
 NEW_FILES = (ROOT / "common" / "experiments_doc.py", ROOT / PAGE)
+SELECT_KEY = "experiments.selected"
 HANG_LIMIT = 20.0  # 秒。ハング検出用の緩い上限 (性能の目標ではない)
 
 #: 表示に残ってはならない形 (Streamlit の markdown では飛び先がない、または生の HTML として扱われる)
@@ -194,13 +195,16 @@ def test_default_page_is_still_the_playground():
     assert not heading_numbers(shown_markdown(at))
 
 
-def test_experiments_page_shows_the_guide_without_raw_markup():
+def test_experiments_page_shows_the_overview_first_without_raw_markup():
+    """既定の選択は先頭 (一覧と使い方)。ページの題は st.title、本文は選んだ節だけ (実験の見出しは 1 つも出ない)。"""
     at = open_app()
     at.switch_page(PAGE)
     step(at)
+    assert [t.value for t in at.title] == ["おすすめの実験"]
+    assert at.selectbox(key=SELECT_KEY).value == OVERVIEW_TITLE
     text = shown_markdown(at)
-    assert "おすすめの実験" in text
-    assert heading_numbers(text) == list(range(1, 13))
+    assert "ねらい" in text and "| # |" in text  # 一覧の表
+    assert not heading_numbers(text)
     for leftover in LEFTOVERS:
         assert leftover not in text, leftover
     # データ設定のサイドバーは、このページでも描かれる (app.py の振る舞いは変えない)
@@ -268,3 +272,105 @@ def test_experiments_page_does_not_allow_raw_html():
         if isinstance(node, ast.Call):
             for kw in node.keywords:
                 assert kw.arg != "unsafe_allow_html", f"line {node.lineno}"
+
+
+# ---------------------------------------------------------------------------
+# P5: 実験を 1 つずつ表示する (split_experiments と selectbox)
+# ---------------------------------------------------------------------------
+def real_sections():
+    return split_experiments(load_experiments_markdown())
+
+
+def check_split_is_complete() -> None:
+    text = load_experiments_markdown()
+    sections = real_sections()
+    assert "".join(s.markdown for s in sections) == text
+    assert sections[0].title == OVERVIEW_TITLE and not heading_numbers(sections[0].markdown)
+    numbers = heading_numbers(text)
+    assert [heading_numbers(s.markdown) for s in sections[1:]] == [[n] for n in numbers]
+    assert [s.title.split(".")[0] for s in sections[1:]] == [str(n) for n in numbers]
+    assert len({s.title for s in sections}) == len(sections)  # 選択肢の名前が重ならない
+
+
+def test_split_loses_and_duplicates_nothing():
+    """(a) 全節を連結すると、表示用の文字列と一致する。実験の見出し `### N.` はちょうど 1 回ずつ、順に 1 節へ入る。"""
+    check_split_is_complete()
+    assert len(real_sections()) == 13  # 一覧 + 実験 1〜12 (実験 13 は足さない: PM の決定 2026-10-07)
+
+
+def test_split_attaches_group_headings_to_the_next_experiment():
+    """`## ` の見出しと導入文は、続く最初の実験の節に付く (実験 11 の節に「実データ」の導入が入る)。"""
+    text = load_experiments_markdown()
+    group_headings = re.findall(r"^## .*$", text, flags=re.MULTILINE)
+    assert group_headings
+    sections = real_sections()
+    for heading in group_headings:
+        owners = [s for s in sections if heading in s.markdown]
+        assert len(owners) == 1, heading
+        # 見出しの位置は、その節の中で実験の見出しより前
+        md = owners[0].markdown
+        if heading_numbers(md):
+            assert md.index(heading) < md.index("### ")
+
+
+def test_split_on_a_small_document(tmp_path: Path):
+    md = "# 題\n\n導入\n\n## 群 A\n\n群の説明\n\n### 1. 最初\n\n本文 1\n\n### 2. 次\n\n本文 2\n\n## 群 B\n\n### 3. 最後\n\n本文 3\n"
+    sections = split_experiments(md)
+    assert [s.title for s in sections] == [OVERVIEW_TITLE, "1. 最初", "2. 次", "3. 最後"]
+    assert "".join(s.markdown for s in sections) == md
+    assert "群の説明" in sections[1].markdown and "## 群 B" in sections[3].markdown
+    assert "# 題" not in sections[0].display_markdown and "導入" in sections[0].display_markdown
+
+
+def test_broken_split_pattern_is_caught_by_the_completeness_check(monkeypatch):
+    """負の対照: 区切りの正規表現を 1 文字壊す (見出しの `.` を落とす) と、実験の節が 1 つも切り出されず、(a) の検査が落ちる。"""
+    import common.experiments_doc as doc
+
+    monkeypatch.setattr(doc, "_EXPERIMENT_HEADING", re.compile(r"^### (\d+) (.+)$", re.MULTILINE))
+    with pytest.raises(AssertionError):
+        check_split_is_complete()
+
+
+def test_every_selection_opens_with_its_own_heading_and_no_leftovers():
+    """(b) 13 個全部 (一覧 + 実験) の選択肢で、例外なく開き、残骸が出ず、選んだ実験の見出しだけが出る。"""
+    at = open_app()
+    at.switch_page(PAGE)
+    step(at)
+    titles = [s.title for s in real_sections()]
+    assert list(at.selectbox(key=SELECT_KEY).options) == titles
+    for index, title in enumerate(titles):
+        at.selectbox(key=SELECT_KEY).select(title)
+        step(at)
+        text = shown_markdown(at)
+        for leftover in LEFTOVERS:
+            assert leftover not in text, (title, leftover)
+        if index == 0:
+            assert not heading_numbers(text)
+        else:
+            assert heading_numbers(text) == [index], title
+        assert [t.value for t in at.title] == ["おすすめの実験"]
+
+
+def test_selection_survives_a_visit_to_another_page():
+    """(c) 選択したあと、別のページへ行って戻っても選択が残る (persist_state="session")。"""
+    at = open_app()
+    at.switch_page(PAGE)
+    step(at)
+    target = real_sections()[3].title
+    at.selectbox(key=SELECT_KEY).select(target)
+    step(at)
+    at.switch_page("app_pages/playground.py")
+    step(at)
+    at.switch_page(PAGE)
+    step(at)
+    assert at.selectbox(key=SELECT_KEY).value == target
+    assert heading_numbers(shown_markdown(at)) == [3]
+
+
+def test_unknown_stale_selection_falls_back_to_the_first_option():
+    """文書の題が変わって古い選択が選択肢に無くなっても、例外にならず先頭に戻る。"""
+    at = open_app()
+    at.session_state[SELECT_KEY] = "99. 存在しない実験"
+    at.switch_page(PAGE)
+    step(at)
+    assert at.selectbox(key=SELECT_KEY).value == OVERVIEW_TITLE

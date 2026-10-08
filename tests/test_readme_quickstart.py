@@ -318,3 +318,17 @@ def test_readme_playground_describes_confusion_matrix_and_it_is_on_screen():
     captions = [c.value for c in at.caption]
     assert any(c.startswith("訓練データの再現率") for c in captions)
     assert any(c.startswith("テストデータの再現率") for c in captions)
+
+
+def test_readme_experiments_page_describes_selectbox():
+    """README が「操作するものがありません」と書かず、画面の selectbox のラベル「実験を選ぶ」を名指しする。"""
+    sec = _readme_h3("おすすめの実験")
+    assert "操作するものがありません" not in sec
+    assert "「実験を選ぶ」" in sec
+    at = _ok(AppTest.from_file(APP, default_timeout=120))
+    at.switch_page("app_pages/experiments.py")
+    _ok(at)
+    box = at.selectbox(key="experiments.selected")
+    assert box.label == "実験を選ぶ"
+    assert re.search(r"実験は 12 本です", sec)
+    assert sum(bool(re.match(r"\d+\.", o)) or "実験" in o for o in box.options) >= 12, box.options
