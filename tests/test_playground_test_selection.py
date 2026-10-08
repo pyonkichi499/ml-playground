@@ -47,6 +47,12 @@ def test_note_is_shown_only_with_test_data():
     """注意はテストデータがあるときだけ出る。文は傾向の言い方 (「なりがち」) で、CV で選ぶ場所を示す。出典: AD-9。"""
     assert "なりがち" in NOTE and "楽観的になります" not in NOTE  # 必ず起きるとは言わない
     assert "交差検証 (CV)" in NOTE and "★" in NOTE
+    # 「CV で選んだ値」を見られる先が、探索ページと、k-NN・勾配ブースティングのプレイグラウンドの図の 2 か所だと読める (段階 B・P4)。
+    # 変更前の文 (「…ページや、k-NN と勾配ブースティングの図の ★ は、CV で選んだ値です」) にも「ハイパーパラメータ探索」と
+    # 「k-NN と勾配ブースティング」は出るので、変更後の文にだけ現れる語句で確かめる
+    assert "でも、CV で選んだ値を見られます" in NOTE
+    assert "プレイグラウンドの図には" in NOTE and "★ があります" in NOTE
+    assert "図の ★ は" not in NOTE  # 旧文の言い方に戻っていない
     at = AppTest.from_file(APP, default_timeout=60)
     at.session_state["data.n_samples"] = 100
     at.session_state["playground.model"] = KNN

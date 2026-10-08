@@ -25,6 +25,7 @@ from streamlit.testing.v1 import AppTest
 
 from data.generator import DataConfig
 from models import MODEL_REGISTRY
+from tuning.runner import best_trials
 
 ROOT = Path(__file__).resolve().parents[1]
 APP = str(ROOT / "app.py")
@@ -213,3 +214,85 @@ def test_quickstart_step_three_runs_one_search():
     assert at.session_state["tuning.tab"] == "③ 探索の比較" and _quoted("③ 探索の比較")
     assert at.session_state["tuning_result"]["trials"]
     assert at.sidebar.selectbox(key="data.dataset").value == PEN  # 「データの設定は、そのまま引き継がれます」
+
+
+def _step3_text() -> str:
+    return QS[QS.index("**③ 探索を 1 回走らせる"):QS.index("### 3. 次に進む")]
+
+
+def test_quickstart_step_three_explains_table_columns_and_tpe():
+    """③ の補足 (3 手法が同じになる話、Grid の試行の減少、表の列、TPE) が書いてある。列名が画面と一致するかは次のテストが見る。"""
+    step3 = _step3_text()
+    for col in ("最良 CV", "± std", "見つけた試行", "試行数", "TPE ランダム期"):
+        assert f"| {col}" in step3, col
+    assert "白抜き" in step3 and "TPE は、過去の試行の良し悪しから次の候補を選ぶ方法" in step3
+    assert "選ぶ k は手法ごとに違うことがあります" in step3 and "(docs/experiments.md#exp-grid-random)" in step3
+    assert "同じ k を選ぶことはよくあります" not in step3  # 手順どおりの画面 (Moons 22/22/8 など) と合わない旧文
+    assert "丸め" in step3
+
+
+def _run_knn_search(dataset: str, pair: str | None = None) -> dict[str, tuple[int, float]]:
+    """README ③ の手順どおりの画面で探索を走らせ、手法ごとの (最良の k, 最良 CV) を返す。
+
+    Penguins は README ② と同じ操作 (特徴量の組を 2 つ目の PAIR に切り替え、標準化は既定のオン) を行う。
+    Moons は「データセットだけ変える」(ほかは既定)。その後 k-NN を選んで「探索を実行」を押す。
+    """
+    at = _ok(AppTest.from_file(APP, default_timeout=120))
+    at.sidebar.selectbox(key="data.dataset").set_value(dataset)
+    _ok(at)
+    if pair is not None:
+        at.sidebar.selectbox(key=f"data.{dataset}.preset").set_value(pair)
+        _ok(at)
+        assert at.sidebar.checkbox(key="data.real.standardize").value is True  # 標準化は既定でオン
+    at.switch_page("app_pages/tuning.py")
+    _ok(at)
+    at.sidebar.selectbox(key="tuning.model").set_value(KNN)
+    _ok(at)
+    at.button(key="tuning.run").click()
+    _ok(at)
+    best = best_trials(at.session_state["tuning_result"]["trials"])
+    return {m: (t.params["n_neighbors"], round(t.mean_cv, 3)) for m, t in best.items()}
+
+
+def test_quickstart_step_three_best_cv_close_but_k_differs_on_screen():
+    """③ に書いた「最良 CV はほぼ同じで、選ぶ k は手法ごとに違うことがある」数値が、手順どおりの画面で起きる。
+
+    条件: k-NN、既定の予算 (25 試行・5 分割)、探索のシード 0、データのシード 42・テスト 0.30。
+    Penguins は README ② の手順どおり (特徴量の組は 2 つ目 = くちばしの長さ × 体重、標準化オン)、Moons は noise 0.20。
+    別の入口 (DataConfig と run_search を直接呼ぶ) でも同じ値になることを確かめてから書いた。
+    """
+    step3 = _step3_text()
+    assert "② の手順どおり（特徴量の組は 2 つ目、標準化オン）" in step3
+    pen = _run_knn_search(PEN, pair=PAIR)
+    assert pen == {"Grid": (6, 0.968), "Random": (6, 0.968), "TPE": (6, 0.968)}
+    assert "0.968" in step3 and "6 / 6 / 6" in step3
+    assert "0.961" not in step3 and "4 / 15 / 6" not in step3  # 特徴量の組が 1 つ目のときの値は載せない
+    moons = _run_knn_search("Moons")
+    assert moons == {"Grid": (22, 0.957), "Random": (22, 0.957), "TPE": (8, 0.957)}
+    assert "0.957" in step3 and "22 / 22 / 8" in step3
+    assert len({k for k, _ in moons.values()}) > 1  # 「違うことがある」
+
+
+def test_quickstart_step_three_column_names_exist_on_screen():
+    """README の ③ が説明する列名が、実際に探索を走らせた画面の表の列名にある。"""
+    at = _ok(AppTest.from_file(APP, default_timeout=120))
+    at.sidebar.selectbox(key="data.dataset").set_value(PEN)
+    _ok(at)
+    at.switch_page("app_pages/tuning.py")
+    _ok(at)
+    at.sidebar.selectbox(key="tuning.model").set_value(KNN)
+    _ok(at)
+    at.button(key="tuning.run").click()
+    _ok(at)
+    cols = {c for df in at.dataframe for c in df.value.columns}
+    step3 = _step3_text()
+    documented = re.findall(r"^\s*\| (最良 CV|± std|見つけた試行|試行数|TPE ランダム期)", step3, flags=re.M)
+    assert len(documented) == 5
+    assert set(documented) <= cols, set(documented) - cols
+
+
+def test_quickstart_mentions_git_clone_and_experiment9_setup():
+    assert "`git clone`" in QS
+    assert "外して結果を見てから、また付けます" in QS
+    nxt = QS[QS.index("### 3. 次に進む"):]
+    assert all(w in nxt for w in ("Moons", "500", "0.40", "42")), "実験 9 の設定への戻り方が無い"

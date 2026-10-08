@@ -116,6 +116,11 @@ def test_note_wording():
     assert "一致するとは限らない" in CALIBRATION_NOTE
     assert "確率 0.9 と出た点を集めても、その 9 割が class 1 とは限らない" in CALIBRATION_NOTE
     assert "較正" in CALIBRATION_NOTE
+    # 「0.9 と出た点」が背景の色ではなく、データの点を集めたときの話だと分かる (学習者点検 4-1。段階 B・P4)
+    assert "図の背景ではなく、データの点を集めたとき" in CALIBRATION_NOTE
+    # アプリに信頼性図 (較正曲線) は無い。学習者が探してしまうので、無いものを指す文は書かない
+    for missing in ("信頼性図", "較正曲線", "信頼度曲線", "reliability"):
+        assert missing not in CALIBRATION_NOTE, missing
     for banned in ("精度", "学習データ", "評価データ"):  # 用語集で使わない語
         assert banned not in CALIBRATION_NOTE, banned
 
