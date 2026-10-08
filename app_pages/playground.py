@@ -1,9 +1,11 @@
 """プレイグラウンド: 1つのモデルのハイパーパラメータを動かし、決定境界の変化を観察する。"""
 
 import matplotlib.pyplot as plt
+import numpy as np
 import streamlit as st
 from sklearn.metrics import accuracy_score
 
+from common.confusion import confusion_counts, confusion_figure, recall_per_class
 from common.data import current_config, load_data, render_data_card
 from models import MODEL_REGISTRY
 from models.base import FitError, PlotContext
@@ -35,6 +37,16 @@ TEST_SELECTION_NOTE = (
     "「ハイパーパラメータ探索」のページでも、CV で選んだ値を見られます。"
     "k-NN と勾配ブースティングのプレイグラウンドの図には、CV で選んだ値の ★ があります。"
 )
+#: 混同行列の節の説明 (行 = 正解、列 = 予測。再現率は行ごとの当てた割合)。クラスの数は「クラスの数」と書き、記号 K は UI に出さない
+# claim: M-CM-1, M-CM-2
+CONFUSION_NOTE = (
+    "行は正解のクラス、列はモデルの予測です。対角線の上が当たりで、その合計 ÷ 全体が正解率です。"
+    "右の再現率は、その行（そのクラスの正解の点）のうち、当てた割合です。"
+    "正解率は、再現率をクラスの点数で重みづけして平均したものなので、"
+    "点数の少ないクラスの再現率が低くても、正解率は高く出ることがあります。色の濃さは、行の中の割合です。"
+)
+# claim: M-CM-3
+CONFUSION_SMALL_N_NOTE = "点数の少ない行では、1 点で再現率が大きく動きます（行の合計が 20 点なら、1 点で 0.05）。"
 #: モデルが宣言する標準化の種類 (BaseModel.standardize_kind) → 説明の文
 STANDARDIZE_NOTES = {
     "invariant": STANDARDIZE_NO_EFFECT,
@@ -88,11 +100,14 @@ except FitError as exc:
 normalized = config.normalized()
 ctx = PlotContext.build(X_train, y_train, X_test, y_test, spec=config.spec(), features=normalized.features)
 
-train_acc = accuracy_score(y_train, model.predict(X_train))
+# 予測は 1 回だけ取る。正解率の指標と混同行列が同じ予測から出るので、食い違わない
+pred_train = model.predict(X_train)
+pred_test = model.predict(X_test) if ctx.has_test else None
+train_acc = accuracy_score(y_train, pred_train)
 # (ラベル, 値, delta)。1 行に最大 METRICS_PER_ROW 個ずつ並べる (多いと値が切れるため, AD-8)
 metric_items: list[tuple[str, object, str | None]] = [("訓練データの正解率", f"{train_acc:.3f}", None)]
 if ctx.has_test:
-    test_acc = accuracy_score(y_test, model.predict(X_test))
+    test_acc = accuracy_score(y_test, pred_test)
     metric_items.append(("テストデータの正解率", f"{test_acc:.3f}", f"{test_acc - train_acc:+.3f} (vs 訓練)"))
 else:
     metric_items.append(("テストデータの正解率", "—", None))
@@ -116,6 +131,23 @@ with right:
     st.markdown(model.boundary_description() + "\n\n" + advice)
     with st.expander("選択中のハイパーパラメータ"):
         st.json(params)
+
+st.subheader("誤りの内訳（混同行列）")
+st.markdown(CONFUSION_NOTE)
+class_labels = ctx.class_labels
+confusion_sets = [("訓練データ", "train", y_train, pred_train)]
+if ctx.has_test:
+    confusion_sets.append(("テストデータ", "test (held out)", y_test, pred_test))
+matrices = [(name_ja, name_en, confusion_counts(y_true, y_pred, len(class_labels)))
+            for name_ja, name_en, y_true, y_pred in confusion_sets]
+for column, (name_ja, name_en, cm) in zip(st.columns(2), matrices):
+    with column:
+        st.pyplot(confusion_figure(cm, class_labels, title=f"{name_en} (n = {int(cm.sum())})"))  # Figure を直接作るので close は要らない
+        parts = [f"{label} " + ("—" if np.isnan(r) else f"{r:.3f}（{int(row.sum())} 点中 {int(row[i])}）")
+                 for i, (label, r, row) in enumerate(zip(class_labels, recall_per_class(cm), cm))]
+        st.caption(f"{name_ja}の再現率: " + "／".join(parts))
+smallest_row = min(int(n) for _, _, cm in matrices for n in cm.sum(axis=1) if n > 0)
+st.caption(CONFUSION_SMALL_N_NOTE + f"この画面で最も少ない行は {smallest_row} 点で、1 点で再現率が {1 / smallest_row:.3f} 動きます。")
 
 for title, extra_fig, *caption in model.extra_plots(ctx):
     st.subheader(title)

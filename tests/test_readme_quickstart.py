@@ -296,3 +296,25 @@ def test_quickstart_mentions_git_clone_and_experiment9_setup():
     assert "外して結果を見てから、また付けます" in QS
     nxt = QS[QS.index("### 3. 次に進む"):]
     assert all(w in nxt for w in ("Moons", "500", "0.40", "42")), "実験 9 の設定への戻り方が無い"
+
+
+def _readme_h3(heading: str) -> str:
+    """`### heading` から次の `##` の直前まで (見出しが無いときは空文字)。"""
+    start = README.find(f"\n### {heading}\n")
+    if start == -1:
+        return ""
+    m = re.search(r"\n##+ ", README[start + 1:])
+    return README[start:start + 1 + m.start()] if m else README[start:]
+
+
+def test_readme_playground_describes_confusion_matrix_and_it_is_on_screen():
+    """README の「プレイグラウンド」の項の混同行列の案内が、画面の小見出し・再現率の行と合い、診断の注意を添えている。"""
+    sec = _readme_h3("プレイグラウンド")
+    assert "**誤りの内訳（混同行列）**" in sec
+    for phrase in ("行が正解、列が予測", "再現率", "診断に使うものではありません", "class 1 が悪性"):
+        assert phrase in sec, phrase
+    at = _ok(AppTest.from_file(APP, default_timeout=120))
+    assert "誤りの内訳（混同行列）" in [s.value for s in at.subheader]
+    captions = [c.value for c in at.caption]
+    assert any(c.startswith("訓練データの再現率") for c in captions)
+    assert any(c.startswith("テストデータの再現率") for c in captions)
