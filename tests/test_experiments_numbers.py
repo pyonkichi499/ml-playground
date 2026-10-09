@@ -104,8 +104,9 @@ def test_x1_l1_c1000_does_not_converge():
     assert m._convergence == "max_iter"
 
 
+@pytest.mark.claim("X1-5")
 def test_x1_table_values():
-    """実験 1 の表 (L1 の非ゼロ係数の数と訓練 / テスト、L2 の係数ノルム)。表の ID は P6 で付ける (T)。"""
+    """実験 1 の表 (L1 の非ゼロ係数の数と訓練 / テスト、L2 の係数ノルム)。出典: docs/experiments.md 実験 1 (claim X1-5)。"""
     expect_l1 = {100: (25, 0.943, 0.867), 10: (13, 0.921, 0.867), 1: (7, 0.871, 0.867), 0.1: (3, 0.814, 0.867),
                  0.01: (0, 0.5, 0.5)}
     for C, (nz, tr, te) in expect_l1.items():
@@ -177,8 +178,9 @@ def test_x2_without_test_split_best_k_is_11():
     assert (cv_ks[best], r3(cv[best]), r3(cv[cv_ks.index(51)])) == (11, 0.925, 0.865)
 
 
+@pytest.mark.claim("X2-6")
 def test_x2_table_values():
-    """実験 2 の表 (k = 1・25・50 の訓練 / テスト)。表の ID は P6 (T)。"""
+    """実験 2 の表 (k = 1・25・50 の訓練 / テスト)。出典: docs/experiments.md 実験 2 (claim X2-6)。"""
     Xtr, Xte, ytr, yte = moons()
     got = {}
     for k in (1, 25, 50):
@@ -202,8 +204,9 @@ def test_x3_lda_on_circles_is_chance_level():
     assert _gauss("lda") == (0.521, 0.483)
 
 
+@pytest.mark.claim("X3-2")
 def test_x3_table_values():
-    """実験 3 の表 (QDA 0.864 / 0.917、Naive Bayes 0.871 / 0.900)。表の ID は P6 (T)。"""
+    """実験 3 の表 (QDA 0.864 / 0.917、Naive Bayes 0.871 / 0.900)。出典: docs/experiments.md 実験 3 (claim X3-2)。"""
     assert (_gauss("qda"), _gauss("nb")) == ((0.864, 0.917), (0.871, 0.9))
 
 
@@ -241,8 +244,9 @@ def test_x4_min_samples_leaf_10_removes_the_gap():
     assert (r["depth"], r["leaves"], r["train"], r["test"]) == (5, 10, 0.857, 0.85)
 
 
+@pytest.mark.claim("X4-5")
 def test_x4_table_values():
-    """実験 4 の表 (深さ 1〜None の実際の深さ・葉・訓練・テスト)。表の ID は P6 (T)。"""
+    """実験 4 の表 (深さ 1〜None の実際の深さ・葉・訓練・テスト)。出典: docs/experiments.md 実験 4 (claim X4-5)。"""
     expect = {1: (1, 2, 0.814, 0.833), 2: (2, 4, 0.871, 0.867), 3: (3, 6, 0.871, 0.867), 5: (5, 15, 0.957, 0.833),
               8: (8, 21, 0.993, 0.817), None: (9, 22, 1.0, 0.8)}
     for d, row in expect.items():
@@ -278,8 +282,9 @@ def test_x5_100_trees_still_train_one_and_oob_0893():
     assert r3(m.oob_accuracy) == 0.893
 
 
+@pytest.mark.claim("X5-3")
 def test_x5_table_values():
-    """実験 5 の表 (木 1・10・100 本の訓練 / テスト)。表の ID は P6 (T)。"""
+    """実験 5 の表 (木 1・10・100 本の訓練 / テスト)。出典: docs/experiments.md 実験 5 (claim X5-3)。"""
     expect = {1: (0.95, 0.817), 10: (0.993, 0.85), 100: (1.0, 0.917)}
     for n, row in expect.items():
         m, (Xtr, Xte, ytr, yte) = _forest(n)
@@ -339,8 +344,9 @@ def test_x6_test_loss_minimum_is_at_57_trees_reference_only():
     assert abs(int(np.argmin(loss)) + 1 - 57) <= 2
 
 
+@pytest.mark.claim("X6-7")
 def test_x6_table_values():
-    """実験 6 の表 (9 セルの訓練 / テスト、許容 ±1 点)。表の ID は P6 (T)。"""
+    """実験 6 の表 (9 セルの訓練 / テスト、許容 ±1 点)。出典: docs/experiments.md 実験 6 (claim X6-7)。"""
     table = {(0.01, 10): (0.843, 0.85), (0.01, 50): (0.843, 0.85), (0.01, 500): (0.907, 0.883),
              (0.1, 10): (0.843, 0.858), (0.1, 50): (0.904, 0.883), (0.1, 500): (1.0, 0.792),
              (1.0, 10): (0.939, 0.792), (1.0, 50): (1.0, 0.817), (1.0, 500): (1.0, 0.767)}
@@ -381,8 +387,9 @@ def test_x7_gamma_100_overfits_with_134_of_140_support_vectors():
     assert (r3(acc(m, Xtr, ytr)), r3(acc(m, Xte, yte))) == (1.0, 0.8)
 
 
+@pytest.mark.claim("X7-5")
 def test_x7_table_values():
-    """実験 7 の表 (gamma ごとの訓練 / テスト / サポートベクター数)。表の ID は P6 (T)。"""
+    """実験 7 の表 (gamma ごとの訓練 / テスト / サポートベクター数)。出典: docs/experiments.md 実験 7 (claim X7-5)。"""
     expect = {0.1: (0.807, 0.883, 78), 1: (0.921, 0.917, 59), 10: (0.929, 0.867, 81), 100: (1.0, 0.8, 134)}
     for g, row in expect.items():
         m, (Xtr, Xte, ytr, yte) = _svm(g)
@@ -431,8 +438,9 @@ def test_x8_max_iter_1000_converges_near_595_epochs_and_changes_few_grid_cells()
     assert abs(diff - 143) <= 20 and diff / len(grid) < 0.01, diff
 
 
+@pytest.mark.claim("X8-4")
 def test_x8_table_values():
-    """実験 8 の表 (許容 ±1 点)。表の ID は P6 (T)。"""
+    """実験 8 の表 (許容 ±1 点)。出典: docs/experiments.md 実験 8 (claim X8-4)。"""
     expect = {("identity", 1): (0.807, 0.9), ("identity", 3): (0.807, 0.9), ("relu", 1): (0.964, 0.983),
               ("relu", 3): (1.0, 0.967)}
     for (act, nl), (tr, te) in expect.items():
@@ -536,8 +544,9 @@ def test_x10_paired_comparison_counts(search):
     assert (int((g & ~r).sum()), int((~g & r).sum()), int((g & r).sum()), int((~g & ~r).sum())) == (2, 10, 122, 16)
 
 
+@pytest.mark.claim("X10-4")
 def test_x10_table_values(search):
-    """実験 10 の表 (3 手法の選ばれたパラメータ・最良 CV・テスト)。表の ID は P6 (T)。± SE は runner.test_standard_error。"""
+    """実験 10 の表 (3 手法の選ばれたパラメータ・最良 CV・テスト)。出典: docs/experiments.md 実験 10 (claim X10-4)。± SE は runner.test_standard_error。"""
     b, t = search["best"], search["tests"]
     assert (b["Grid"].params, r3(b["Grid"].mean_cv), r3(t["Grid"])) == (
         {"max_depth": 10, "min_samples_leaf": 7}, 0.817, 0.827)
