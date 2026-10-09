@@ -27,7 +27,7 @@ Python 3.14（uv で管理）。動作確認したバージョン: streamlit 1.6
 - `app.py` — エントリポイント。`st.navigation` のルーターで、共通のデータ設定サイドバーを描いてからページを実行する。ページは「プレイグラウンド」（既定）・「ハイパーパラメータ探索」・「おすすめの実験」の 3 つ。サイドバーは「おすすめの実験」でも同じに描く（ページによって分けない）。
 - `app_pages/playground.py` — 1 つのモデルについて、サイドバーのパラメータ、決定境界、指標、追加の図を表示する。
 - `app_pages/tuning.py` — ハイパーパラメータ探索ページ（タブ ①〜④、Grid / Random / TPE）。
-- `app_pages/experiments.py` — 「おすすめの実験」ページ。`docs/experiments.md` を読んで表示するだけで、ウィジェットは置かない。
+- `app_pages/experiments.py` — 「おすすめの実験」ページ。`docs/experiments.md` を読んで表示する。置くウィジェットは、実験を 1 つ選ぶ selectbox（key `experiments.selected`）だけ。
 - `common/experiments_doc.py` — 実験ガイドを表示用に整える純粋な関数（`load_experiments_markdown`。streamlit・models・tuning を import しない）。除くのは、`<!-- … -->` のコメント、単独行の `<a id="…"></a>`、ページ内リンク `](#exp-…)`（リンクを外して文だけ残す）。外部リンクは残す。結果は文書の更新時刻をキーに使い回す。
 - `docs/experiments.md` — 実験ガイド（数値の正本。教える主張の ID を持つ）。
 - `common/data.py` — 共通のデータ設定サイドバー（`render_data_sidebar`、`current_config`、キャッシュ付きの `load_data`、実データの説明カード `render_data_card`）。
@@ -42,7 +42,7 @@ Python 3.14（uv で管理）。動作確認したバージョン: streamlit 1.6
 ## モデルプラグインの規則（`models/base.py` の docstring も参照）
 1. `models/<name>.py` に `BaseModel` のサブクラスを書き、`@register` を付け、`models/__init__.py` でそのモジュールを import する。アプリ側の変更は不要。
 2. `default_params` には `build()` が受け取る全パラメータを並べる（サイドバーの既定値と、探索時の固定値の唯一の情報源）。`build(params)` は必ず `{**self.default_params, **params}` でマージすること。探索では一部のパラメータだけが渡され、無効な条件付きパラメータは除かれる。
-3. サイドバーのウィジェットには必ず `key=self.key("<param>"), persist_state="session"` を付ける（モデルごとに名前空間を分け、モデルやページを切り替えても値が残る）。ほかのページのウィジェットも同じく、安定した key と `persist_state="session"` が必要。「おすすめの実験」のページは今ウィジェットを持たない。足すときは同じ規則に従う。
+3. サイドバーのウィジェットには必ず `key=self.key("<param>"), persist_state="session"` を付ける（モデルごとに名前空間を分け、モデルやページを切り替えても値が残る）。ほかのページのウィジェットも同じく、安定した key と `persist_state="session"` が必要。「おすすめの実験」のページの selectbox（`experiments.selected`）も同じ規則に従っている。足すときも同じ規則に従う。
 4. 乱数を使う推定器には `random_state=0` を固定で渡す。ただし、シードを意図して UI のパラメータにしている場合は除く。
 5. クラスメソッド `search_space()` は、モデルのパラメータ空間（`default_params` のキー）での `ParamSpec` のリストを返す。条件付きパラメータは親の後に並べる（`active_if`）。カテゴリの選択肢はプリミティブ型だけ（None やタプルは不可）。空間に数値パラメータが 1 つもないモデルは、探索ページに出ない。`@classmethod` を付け忘れると、`@register` が `TypeError` で失敗する。
 6. `tuning_cost` は `"low" | "medium" | "high"`。これで `tuning/budget.py` の予算が決まる。
