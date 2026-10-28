@@ -219,6 +219,9 @@ class BaseModel(ABC):
     #: プレイグラウンドは、これで説明の文 (app_pages/playground.py の STANDARDIZE_*) を選ぶ。None = 未分類で、文を出さない。
     #: 新しいモデルの種類は、裏づけを測ってから宣言する ("invariant" なら、単位を変えても予測が同じことのテストを足す)
     standardize_note_kind: ClassVar[StandardizeKind | None] = None
+    #: K>2 (3 クラス以上) に対応しているか。False のモデルは、K>2 の y で fit すると NotImplementedError にする
+    #: (黙って 2 クラスの図を描かせない)。対応したモデルが True に上げる (多クラス設計 N16)
+    supports_multiclass: ClassVar[bool] = False
 
     @classmethod
     def standardize_kind(cls, params: dict[str, Any]) -> StandardizeKind | None:
@@ -230,6 +233,8 @@ class BaseModel(ABC):
         self.params: dict[str, Any] = {}
         self.estimator: Any = None
         self.standardize: bool = False
+        #: クラス数 K。fit が y の最大ラベル + 1 から決める (ラベルは 0..K-1。訓練に無いクラスがあっても K は変わらない)
+        self.n_classes: int | None = None
 
     # ---- 必須 ----
     @abstractmethod
@@ -262,8 +267,14 @@ class BaseModel(ABC):
 
     def fit(self, X: np.ndarray, y: np.ndarray, params: dict[str, Any], *, standardize: bool = False) -> "BaseModel":
         """make_estimator で推定器を組んで学習する。standardize はデータ設定の「標準化する」(AD-14.4)。"""
+        n_classes = int(np.max(y)) + 1 if len(y) else 0
+        if n_classes > 2 and not self.supports_multiclass:
+            raise NotImplementedError(
+                f"{type(self).__name__} は 3 クラス以上 (K={n_classes}) にまだ対応していません (supports_multiclass = False)"
+            )
         self.params = params
         self.standardize = standardize
+        self.n_classes = n_classes
         with warnings.catch_warnings():
             for category, message in self.expected_fit_warnings:
                 warnings.filterwarnings("ignore", message=message, category=category)
@@ -283,10 +294,43 @@ class BaseModel(ABC):
         return self.estimator.predict(X)
 
     def predict_proba(self, X: np.ndarray) -> np.ndarray | None:
-        """クラス1の確率を返す。未対応のモデルは None を返せばよい。"""
+        """クラス1の確率を返す。未対応のモデルは None を返せばよい。
+
+        2 クラス専用 (移行中だけ残す)。K>2 では (n, K) の確率の 2 列目だけを返してしまうので、例外にする。
+        K>2 は predict_proba_matrix を使う。
+        """
         if hasattr(self.estimator, "predict_proba"):
+            n_classes = self._n_classes()
+            if n_classes > 2:
+                raise NotImplementedError(
+                    f"predict_proba は 2 クラス専用です (K={n_classes})。predict_proba_matrix を使ってください"
+                )
             return self.estimator.predict_proba(X)[:, 1]
         return None
+
+    def _n_classes(self) -> int:
+        """クラス数 K。fit で決めた値。fit を通さずに estimator を差し込んだ場合は classes_ の最大ラベル + 1。"""
+        if self.n_classes is not None:
+            return self.n_classes
+        return int(np.max(self.estimator.classes_)) + 1
+
+    def predict_proba_matrix(self, X: np.ndarray, n_classes: int | None = None) -> np.ndarray | None:
+        """各クラスの確率 (n, K) を返す。列は class 0..K-1 の順で、必ず K 列 (多クラス設計 N16)。
+
+        推定器の列は classes_ の順なので、classes_ を使って class 0..K-1 の順に並べ直す。訓練に無かったクラスの列は 0。
+        K は fit で決めた値。n_classes を渡すと、それを使う (訓練の分割に無いクラスが末尾にあるとき)。
+        predict_proba を持たない推定器 (SVC の既定) は None。
+        """
+        if not hasattr(self.estimator, "predict_proba"):
+            return None
+        k = n_classes if n_classes is not None else self._n_classes()
+        classes = np.asarray(self.estimator.classes_).astype(int)
+        if classes.min() < 0 or classes.max() >= k:
+            raise ValueError(f"classes_ {classes.tolist()} が K={k} の範囲 (0..{k - 1}) にありません")
+        raw = np.asarray(self.estimator.predict_proba(X))
+        out = np.zeros((raw.shape[0], k), dtype=raw.dtype)
+        out[:, classes] = raw
+        return out
 
     # ---- 決定境界図 ----
     def boundary_description(self) -> str:
