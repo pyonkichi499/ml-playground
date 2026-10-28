@@ -21,6 +21,7 @@ import tuning.runner
 from data.generator import DataConfig, class_balance, is_imbalanced
 from models import MODEL_REGISTRY
 from models.base import make_estimator
+from app_pages.tuning_text import SCORING_LABELS
 from tuning import plots
 from tuning.budget import budget_for
 from tuning.records import Surface, TrialRecord, TuningConfig
@@ -118,7 +119,8 @@ def page_functions(*names: str) -> dict[str, Any]:
         or (isinstance(n.value, ast.Dict) and all(isinstance(v, ast.Constant) for v in n.value.values)))]
     ns: dict[str, Any] = {"math": math, "np": np, "Any": Any, "ParamSpec": ParamSpec, "plots": plots,
                           "Surface": Surface, "class_balance": class_balance, "is_imbalanced": is_imbalanced,
-                          "dataclasses": dataclasses, "DataConfig": DataConfig, "TuningConfig": TuningConfig}
+                          "dataclasses": dataclasses, "DataConfig": DataConfig, "TuningConfig": TuningConfig,
+                          "SCORING_LABELS": SCORING_LABELS}  # C5: 定数は tuning_text.py に移した
     exec(compile(ast.Module(body=consts + defs, type_ignores=[]), str(PAGE), "exec"), ns)
     return ns
 
@@ -579,7 +581,7 @@ def test_best_at_range_edge():
 
 def test_scoring_help_follows_class_balance():
     """AD-14: 不均衡かどうかは宣言ではなくラベルから導き、多数派の割合も計算で出す (手書きの値を使わない)。"""
-    scoring_help = page_functions("scoring_help")["scoring_help"]
+    from app_pages.tuning_text import scoring_help  # C5: 文言の関数は tuning_text.py に移した
     balanced = scoring_help(np.array([0] * 70 + [1] * 70))
     assert "ほぼ半々" in balanced and "このデータはクラスが偏っている" not in balanced
     skewed = scoring_help(np.array([0] * 102 + [1] * 48))  # 多数派 0.68 (Penguins の Adelie / Chinstrap くらい)
@@ -684,7 +686,7 @@ def test_previous_run_text_for_synthetic_and_real_data():
 
 def test_se_caption_wording():
     """KU-02 / IZ-15 (b): ④ の ± SE の説明。補正した式であることを書き、言い過ぎの語は使わない。"""
-    caption = page_functions("test_se_caption")["test_se_caption"]
+    from app_pages.tuning_text import test_se_caption as caption  # C5: tuning_text.py に移した
     acc, auc = caption("accuracy", 30), caption("roc_auc", 30)
     assert "1 点で 0.033 動く" in acc and "Agresti–Coull 型の補正" in acc and "0 にならない" in acc
     assert "√(p(1−p)/n)" not in acc and "大きめ" not in acc  # p が 0.5 の近くでは補正後の方が小さい
