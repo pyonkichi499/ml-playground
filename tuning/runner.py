@@ -19,12 +19,12 @@ from dataclasses import dataclass
 from typing import Any
 
 import numpy as np
-from sklearn.metrics import get_scorer
 
 import tuning.evaluate as _ev
 from models.base import make_estimator
 from tuning.evaluate import model_class, evaluate, make_cv
 from tuning.records import EvalResult, TrialRecord, TuningConfig
+from tuning.scoring import _adjusted_auc, _hanley_mcneil_se, n_classes, resolve_scoring, standard_error  # noqa: F401
 from tuning.searchers import make_searcher
 from tuning.space import ParamSpec, resolve_params
 
@@ -162,7 +162,7 @@ def _refit_and_evaluate(
         try:
             est = make_estimator(model_class(model_name), dict(params_full), standardize)
             est.fit(X_train, y_train)
-            score = float(get_scorer(scoring)(est, X_test, y_test))
+            score = float(resolve_scoring(scoring, n_classes(y_train)).scorer()(est, X_test, y_test))
             correct = np.asarray(est.predict(X_test) == np.asarray(y_test), dtype=bool) if scoring == "accuracy" else None
             return HeldOutResult(score, correct)
         except Exception:  # noqa: BLE001
@@ -220,20 +220,6 @@ def test_scores(
     return {m: r.score for m, r in held_out_results(config, best, X_train, y_train, X_test, y_test).items()}
 
 
-def _hanley_mcneil_se(a: float, n_pos: int, n_neg: int) -> float:
-    """Hanley & McNeil (1982) の AUC の標準誤差 (a = AUC、n_pos = 正例の数、n_neg = 負例の数)。"""
-    q1 = a / (2 - a)
-    q2 = 2 * a * a / (1 + a)
-    var = (a * (1 - a) + (n_pos - 1) * (q1 - a * a) + (n_neg - 1) * (q2 - a * a)) / (n_pos * n_neg)
-    return math.sqrt(max(var, 0.0))
-
-
-def _adjusted_auc(a: float, n_pos: int, n_neg: int) -> float:
-    """SE の計算の中だけで使う、1/2 の側へ寄せた AUC: (A n1 n0 + 2 m) / (n1 n0 + 4 m) = (M A + 2) / (M + 4)。"""
-    m = min(n_pos, n_neg)
-    return (a * n_pos * n_neg + 2 * m) / (n_pos * n_neg + 4 * m)
-
-
 def test_standard_error(score: float, y_test: np.ndarray, scoring: str) -> float:
     """有限のテストデータで測ったスコアの標準誤差の近似 (テスト点の選ばれ方による揺らぎ)。
 
@@ -253,21 +239,15 @@ def test_standard_error(score: float, y_test: np.ndarray, scoring: str) -> float
     どちらも誤差棒の **中心は観測した値** (p、A) のまま。p~ / A~ は SE の計算の中だけで使い、表示しない
     (A~ を中心にすると、観測した値 (AUC 1.0 など) が区間に含まれなくなる。例: A~=0.895、SE=0.061 の区間 [0.83, 0.96])。±1 SE が約 68% を含むとは約束しない (近似)。
     score が NaN、テストが空、片方のクラスしか無い (roc_auc) ときは NaN。
+    K (y_test のクラス数) >= 3 の roc_auc (式が無い) と、tuning/scoring.py に未登録のキーも NaN (N15)。K <= 2 の値は変えていない。
+    式は tuning/scoring.py の登録表にあり、_hanley_mcneil_se・_adjusted_auc もそこへ移した (この module からも import できる)。
     同じテストデータで比べる手法間の差は対応のある比較なので、差の揺らぎはこの誤差棒の重なりより小さくなりうる。
     """
     y = np.asarray(y_test)
     n = len(y)
     if n == 0 or score is None or not math.isfinite(score):
         return float("nan")
-    if scoring == "roc_auc":
-        n_pos = int(np.sum(y == np.max(y)))
-        n_neg = n - n_pos
-        if n_pos == 0 or n_neg == 0:
-            return float("nan")
-        return _hanley_mcneil_se(_adjusted_auc(float(score), n_pos, n_neg), n_pos, n_neg)
-    x = float(score) * n
-    p_adj = (x + 2) / (n + 4)
-    return math.sqrt(max(p_adj * (1 - p_adj), 0.0) / (n + 4))
+    return standard_error(scoring, float(score), y)
 
 
 # pytest が test_ で始まる関数をテストとして収集しないように
@@ -424,7 +404,7 @@ def _one_fold_seconds(model_name: str, params: Mapping[str, Any], X: np.ndarray,
                       scoring: str, standardize: bool = False) -> float:
     """最初の fold だけで cross_validate と同じ仕事 (学習 + 検証と訓練のスコア) をした時間 [秒]。"""
     train, val = next(cv.split(X, y))
-    scorer = get_scorer(scoring)
+    scorer = resolve_scoring(scoring, n_classes(y)).scorer()
     start = time.perf_counter()
     with warnings.catch_warnings():
         warnings.simplefilter("ignore", UserWarning)

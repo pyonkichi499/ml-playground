@@ -31,9 +31,11 @@ PLAIN = re.compile(NUMBER)
 # U 系は U2 など今後の番号も拾う。R 系は charter の R-06 などと紛れるので R-10 だけ。R-11 などが増えたらここに足す
 OTHER = re.compile(r"(?<![A-Za-z0-9_-])(U\d+|R-10)(?![A-Za-z0-9_-])")
 BAD_SPELLING = re.compile(r"\bAD[ _]?\d|ＡＤ")  # 単語の先頭の AD だけ (LOAD 5 や HEAD 1 は除く)
-HEADING = re.compile(r"^### (AD-\d+(?:\.\d+)?[a-z]?|U1|R-10|R1)\b(.*)$", re.M)
+# 見出し・表には N15 (指標の登録表) のような「N<数字>」も置ける。コード側の抽出 (NUMBER・OTHER) には入れない:
+# 「ゲート N2」「レビュー N1」のように別の意味の N<数字> がコメントにあり、拾うと誤って落ちるため。
+HEADING = re.compile(r"^### (AD-\d+(?:\.\d+)?[a-z]?|U1|R-10|R1|N\d+)\b(.*)$", re.M)
 ANY_HEADING = re.compile(r"^### .*$", re.M)
-TABLE_ROW = re.compile(r"^\| (AD-\d+(?:\.\d+)?[a-z]?|U1|R-10|R1) \|", re.M)
+TABLE_ROW = re.compile(r"^\| (AD-\d+(?:\.\d+)?[a-z]?|U1|R-10|R1|N\d+) \|", re.M)
 
 
 def source_files(root: Path) -> list[Path]:
@@ -174,3 +176,21 @@ def test_skips_team_and_venv_and_the_doc_itself(tmp_path):
     root = _tree(tmp_path, {"docs/decisions.md": DOC + "\n本文で AD-99 に触れる\n", ".team/n.md": "AD-98", ".venv/x.py": "# AD-97",
                             "a.py": "# AD-1\n"})
     assert problems(root) == []
+
+
+# ---- N<数字> の項目 (指標の登録表 N15) ---------------------------------------------
+def test_n15_entry_exists_in_the_index():
+    """tuning/scoring.py などのコメントにある N15 が、見出しと一覧の両方で引ける (コード側の抽出は N<数字> を拾わないので、ここで固定する)。"""
+    headings, table, unparsed = doc_items(ROOT)
+    assert "N15" in headings and "N15" in table
+    assert unparsed == []
+
+
+def test_n_number_heading_and_row_are_parsed_and_must_agree(tmp_path):
+    doc = DOC.replace("| U1 | d | w |\n", "| U1 | d | w |\n| N15 | e | v |\n") + "### N15 e\n"
+    root = _tree(tmp_path, {"docs/decisions.md": doc, "a.py": "# AD-1 と N15\n"})
+    assert problems(root) == []
+    headings, table, unparsed = doc_items(root)
+    assert "N15" in headings and "N15" in table and unparsed == []
+    root2 = _tree(tmp_path / "x", {"docs/decisions.md": doc.replace("### N15 e\n", ""), "a.py": "# AD-1\n"})
+    assert any("表だけ ['N15']" in p for p in problems(root2))

@@ -5,9 +5,10 @@ import numpy as np
 
 from data.generator import class_balance, is_imbalanced
 from tuning import plots, small_data
+from tuning.scoring import scoring_labels
 from tuning.space import ParamSpec
 
-SCORING_LABELS = {"accuracy": "正解率 (accuracy)", "roc_auc": "ROC AUC"}
+SCORING_LABELS = scoring_labels()  # N15: 登録表 (tuning/scoring.py) から引く。キーと文言は 2 クラスのときと同じ
 #: サイドバーの注意 (N11)。「必ず起きる」領域だけを出す十分条件で、これより手前でも起こりうる (全部は検出しない)。
 #: テンプレートは .format で埋める (f-string にしない)。tests/test_tuning_small_data.py
 # claim: T-5

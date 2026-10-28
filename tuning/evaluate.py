@@ -24,6 +24,7 @@ from sklearn.model_selection import StratifiedKFold, cross_validate
 
 from models.base import make_estimator
 from tuning.records import EvalResult, Surface
+from tuning.scoring import sklearn_scoring_name
 from tuning.space import ParamSpec, resolve_params
 
 #: 並列化を検討する最小セル数。これ未満は常に直列
@@ -115,7 +116,7 @@ def evaluate(
         try:
             estimator = make_estimator(model_class(model_name), dict(params), standardize)
             res = cross_validate(
-                estimator, X, y, cv=cv, scoring=scoring, return_train_score=True, error_score="raise"
+                estimator, X, y, cv=cv, scoring=sklearn_scoring_name(scoring, y), return_train_score=True, error_score="raise"
             )
         except Exception as exc:  # noqa: BLE001 — 失敗は NaN として可視化する
             n = cv.get_n_splits()
