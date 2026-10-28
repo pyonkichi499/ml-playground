@@ -155,3 +155,71 @@ def test_extra_plots_with_small_multiples_use_proba_colormap(calls, model_name):
     for _, kw in contourf:
         assert kw["cmap"] is PROBA_CMAP and kw["alpha"] == 0.5
         np.testing.assert_allclose(kw["levels"], np.linspace(0, 1, 11))
+
+
+# ---- サムネイル・点の大きさ・k-NN の拡大図・小図の点 (C1 で足した固定) ----
+KNN_NAME = next(name for name in MODEL_REGISTRY if name.startswith("k近傍法"))
+
+
+@pytest.mark.parametrize("model_name", list(MODEL_REGISTRY))
+def test_point_size_and_alpha_standalone_vs_thumbnail(model_name):
+    """通常の図は s=28 / テスト 28*1.3、サムネイル (既存の ax) は s=10 / 13。alpha はどちらも 1。"""
+    model, ctx = _fitted(model_name, "Moons")
+    fig = model.plot_decision_boundary(ctx.X_train, ctx.y_train, ctx.X_test, ctx.y_test, resolution=RESOLUTION,
+                                       bounds=ctx.bounds)
+    _, ax = plt.subplots()
+    thumb = model.plot_decision_boundary(ctx.X_train, ctx.y_train, ctx.X_test, ctx.y_test, resolution=RESOLUTION,
+                                         ax=ax, colorbar=False, bounds=ctx.bounds)
+    for figure, (s_train, s_test) in ((fig, (28, 28 * 1.3)), (thumb, (10, 10 * 1.3))):
+        axis = figure.axes[0]
+        train = next(c for c in axis.collections if c.get_label() == "train")
+        test = next(c for c in axis.collections if c.get_label() == "test")
+        np.testing.assert_allclose(train.get_sizes(), [s_train])
+        np.testing.assert_allclose(test.get_sizes(), [s_test])
+        assert train.get_alpha() == 1.0 and test.get_alpha() == 1.0
+
+
+@pytest.mark.parametrize("model_name", list(MODEL_REGISTRY))
+def test_thumbnail_has_no_ticks_but_standalone_has_axis_labels(model_name):
+    model, ctx = _fitted(model_name, "Moons")
+    _, ax = plt.subplots()
+    model.plot_decision_boundary(ctx.X_train, ctx.y_train, ctx.X_test, ctx.y_test, resolution=RESOLUTION, ax=ax,
+                                 colorbar=False, bounds=ctx.bounds)
+    assert list(ax.get_xticks()) == [] and list(ax.get_yticks()) == []
+    assert ax.get_xlabel() == "" and ax.get_ylabel() == ""
+    fig = model.plot_decision_boundary(ctx.X_train, ctx.y_train, ctx.X_test, ctx.y_test, resolution=RESOLUTION,
+                                       bounds=ctx.bounds)
+    standalone = fig.axes[0]
+    assert (standalone.get_xlabel(), standalone.get_ylabel()) == ("x1", "x2")
+    assert len(standalone.get_xticks()) > 0
+
+
+@pytest.mark.parametrize("dataset", DATASETS)
+def test_knn_zoom_inset_uses_proba_colormap_and_thumbnail_has_none(calls, dataset):
+    model, ctx = _fitted(KNN_NAME, dataset)
+    model.plot_decision_boundary(ctx.X_train, ctx.y_train, ctx.X_test, ctx.y_test, resolution=RESOLUTION,
+                                 bounds=ctx.bounds)
+    contourf = _of(calls, "contourf")
+    assert len(contourf) == 2, "主図の背景 + 拡大図の背景の 2 回"
+    _, inset = contourf[1]
+    np.testing.assert_allclose(inset["levels"], np.linspace(0, 1, 21))
+    assert inset["cmap"] is PROBA_CMAP and inset["alpha"] == 0.4 and (inset["vmin"], inset["vmax"]) == (0, 1)
+    calls.clear()
+    _, ax = plt.subplots()
+    model.plot_decision_boundary(ctx.X_train, ctx.y_train, ctx.X_test, ctx.y_test, resolution=RESOLUTION, ax=ax,
+                                 colorbar=False, bounds=ctx.bounds)
+    assert len(_of(calls, "contourf")) == 1, "サムネイルには拡大図を付けない"
+
+
+def test_plot_region_grid_points_are_faded_small_class_colored(calls):
+    ctx = load_ctx("Moons")
+    fig = plot_region_grid([("a", lambda g: np.full(len(g), 0.3))], ctx, resolution=20)
+    scatters = _of(calls, "scatter")
+    assert len(scatters) == 1, "小図には訓練点だけを描く (テスト点は描かない)"
+    _, kw = scatters[0]
+    assert kw["alpha"] == 0.35 and kw["s"] == 10 and kw["label"] == "train"
+    fig.canvas.draw()
+    points = next(c for c in fig.axes[0].collections if c.get_label() == "train")
+    np.testing.assert_allclose(points.get_facecolors()[:, :3], [to_rgba(CLASS_COLORS[int(v)])[:3] for v in ctx.y_train])
+    np.testing.assert_allclose(points.get_facecolors()[:, 3], 0.35)
+    assert list(fig.axes[0].get_xticks()) == [] and list(fig.axes[0].get_yticks()) == []
