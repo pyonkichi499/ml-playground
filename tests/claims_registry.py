@@ -480,6 +480,12 @@ CLAIMS: dict[str, dict] = {
         "summary": "サイドバー: k-NN の近傍数 (一様な重み) が fold の訓練側の点数以上だと、多数派クラスだけを予測する",
         "required": ("test", "ui"),
     },
+    "T-7": {
+        "kind": "text",
+        "summary": "サイドバー: 訓練データの最小のクラスの点数が CV の分割数より少ないと、そのクラスの点が検証データに入らない fold が出て、"
+                   "ROC AUC ではその fold が NaN になる (クラス数に依らない)",
+        "required": ("test", "ui"),
+    },
     # 決定木の「深さと正解率」の図 (models/decision_tree.py の DEPTH_CURVE_NOTE)
     "M-DT-1": {
         "kind": "text",

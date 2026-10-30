@@ -5,14 +5,19 @@
 """
 
 import warnings
+from pathlib import Path
 
 import numpy as np
 import pytest
+from streamlit.testing.v1 import AppTest
 from sklearn.ensemble import RandomForestClassifier
-from sklearn.model_selection import StratifiedKFold
+from sklearn.linear_model import LogisticRegression
+from sklearn.model_selection import StratifiedKFold, cross_validate
 from sklearn.tree import DecisionTreeClassifier
 
 import models  # noqa: F401  (レジストリを埋める)
+import common.data
+from app_pages.tuning_text import stratification_message
 from data.generator import DataConfig
 from models.base import MODEL_REGISTRY, make_estimator
 from models.knn import KNNModel
@@ -264,3 +269,112 @@ def test_stratification_shortfall_works_for_three_or_more_classes():
     assert (s.smallest_class, s.n_splits, s.counts) == (4, 5, (20, 12, 4))
     assert stratification_shortfall(y, 4) is None
     assert stratification_shortfall(np.array([], dtype=int), 3) is None
+
+
+# ------------------------------------------------------------ N12 の画面への配線 (段階 C4)
+# 出典: .team/sp/elif/mc_20261022/multiclass_design_rev2_20261022.md の N12。判定は上の stratification_shortfall のまま。
+ROOT = Path(__file__).resolve().parents[1]
+APP = str(ROOT / "app.py")
+SHORTFALL_HEAD = "訓練データで最も点数の少ないクラスは"
+
+
+def shortfall_warnings(at: AppTest) -> list[str]:
+    return [str(w.value) for w in at.sidebar.warning if SHORTFALL_HEAD in str(w.value)]
+
+
+def open_tuning(**data) -> AppTest:
+    at = AppTest.from_file(APP, default_timeout=120)
+    at.run()
+    at.switch_page("app_pages/tuning.py")
+    at.run()
+    for key, value in {"data.n_samples": 100, **data}.items():
+        at.sidebar.slider(key=key).set_value(value)
+    at.run()
+    assert not at.exception, at.exception
+    return at
+
+
+@pytest.mark.claim("T-7")
+def test_stratification_message_text_and_boundary():
+    """文は最小のクラスの点数と分割数を埋め、境目 (k − 1 で出て k で消える) と一致する。用語集の語だけを使い、K の記号は出さない。出典: N12 の文。"""
+    y = np.array([0] * 30 + [1] * 4)
+    text = stratification_message(y, 5)
+    assert text is not None and text.startswith(SHORTFALL_HEAD)
+    assert "4 点しかなく" in text and "分割数 5 より少ない" in text and "5 個の fold" in text
+    assert stratification_message(np.array([0] * 30 + [1] * 5), 5) is None
+    assert stratification_message(np.array([0] * 30 + [1] * 4), 3) is None
+    for banned in ("学習データ", "フォールド", "バリデーション", "精度", "K="):
+        assert banned not in text
+
+
+@pytest.mark.claim("T-7")
+def test_stratification_message_claim_matches_sklearn():
+    """文の主張「そのクラスの点が 1 つも入らない検証データが出る」を、StratifiedKFold の実際の分割で確かめる。クラス数に依らない。出典: N12 の文。"""
+    for y, k in (
+        (np.array([0] * 30 + [1] * 4), 5),
+        (np.array([0] * 20 + [3] * 12 + [7] * 4), 5),
+        (np.array([0] * 30 + [1] * 1), 3),
+    ):
+        smallest = int(np.unique(y, return_counts=True)[1].argmin())
+        minority = np.unique(y)[smallest]
+        assert stratification_message(y, k) is not None
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            folds = list(StratifiedKFold(k, shuffle=True, random_state=0).split(np.zeros((len(y), 1)), y))
+        assert any(not (y[val] == minority).any() for _, val in folds)
+
+
+@pytest.mark.claim("T-7")
+def test_stratification_message_roc_auc_is_nan_in_fold_without_the_class():
+    """文の主張「ROC AUC ではその fold が NaN になる」を、cross_validate (error_score=nan) の実際の結果で確かめる。
+    出典: .team/sp/elif/mc_20261022/multiclass_design_rev2_20261022.md の N12 (旧 SMALL_CLASS_NOTE の文)。"""
+    rng = np.random.default_rng(0)
+    y = np.array([0] * 30 + [1] * 4)
+    X = rng.normal(size=(len(y), 2)) + y[:, None]
+    assert stratification_message(y, 5) is not None
+    cv = StratifiedKFold(5, shuffle=True, random_state=0)
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore")
+        scores = cross_validate(LogisticRegression(), X, y, cv=cv, scoring="roc_auc", error_score=np.nan)["test_score"]
+    assert np.isnan(scores).sum() == 1  # 4 点が 5 fold に散るので、少数派が入らない fold がちょうど 1 つ
+    assert not np.isnan(scores[~np.isnan(scores)]).any()
+
+
+@pytest.mark.claim("T-7")
+def test_page_warns_when_smallest_class_is_below_split_count(monkeypatch):
+    """最小のクラスが 3 点の訓練データ: k=5 と 10 で警告が出て (点数 3・分割数が文に入る)、k=3 では出ない。失敗ではなく警告 (ページは動く)。出典: N12 の文。"""
+    real = common.data.load_data
+
+    def few_minority(config):
+        X_train, X_test, y_train, y_test = real(config)
+        keep = np.flatnonzero(y_train == 0).tolist() + np.flatnonzero(y_train == 1)[:3].tolist()
+        keep = np.array(sorted(keep))
+        return X_train[keep], X_test, y_train[keep], y_test
+
+    monkeypatch.setattr(common.data, "load_data", few_minority)
+    at = open_tuning()  # k = 5 (既定)
+    (text,) = shortfall_warnings(at)
+    assert "3 点しかなく" in text and "分割数 5 より少ない" in text
+    assert not at.sidebar.info or all(SHORTFALL_HEAD not in str(i.value) for i in at.sidebar.info)
+    at.sidebar.radio(key="tuning.n_splits").set_value(10).run()
+    assert not at.exception, at.exception
+    (text10,) = shortfall_warnings(at)
+    assert "分割数 10 より少ない" in text10
+    at.sidebar.radio(key="tuning.n_splits").set_value(3).run()
+    assert not at.exception, at.exception
+    assert not shortfall_warnings(at)  # 3 点 = k なので不足ではない
+
+
+@pytest.mark.parametrize("dataset", ["Moons", "Palmer Penguins", "Iris"])
+def test_page_has_no_shortfall_warning_for_default_data(dataset):
+    """既定のデータ設定 (トイは既定の n_samples、実データは既定の組) で、分割数 5 (既定) でも 10 でも、警告は出ない。"""
+    at = AppTest.from_file(APP, default_timeout=120)
+    at.run()
+    at.switch_page("app_pages/tuning.py")
+    at.run()
+    at.sidebar.selectbox(key="data.dataset").set_value(dataset).run()
+    assert not at.exception, at.exception
+    assert not shortfall_warnings(at)  # k = 5 (既定)
+    at.sidebar.radio(key="tuning.n_splits").set_value(10).run()
+    assert not at.exception, at.exception
+    assert not shortfall_warnings(at)  # k = 10

@@ -1,4 +1,4 @@
-"""探索ページの文言と、streamlit に依らない小さな関数 (app_pages/tuning.py から移しただけ。中身は変えていない)。"""
+"""探索ページの文言と、streamlit に依らない小さな関数 (app_pages/tuning.py から移した文言と関数に、層化の不足 (N12) の警告文と stratification_message を足した)。"""
 from typing import Any
 
 import numpy as np
@@ -25,6 +25,16 @@ SMALL_DATA_NEIGHBORS_NOTE = (
 )
 SMALL_DATA_AXIS_TAIL = "探索範囲 {lo}–{hi} のうち {threshold}〜{hi} はこの領域で、全探索マップでは平らな領域として見える。"
 SMALL_DATA_FIXED_TAIL = "固定した値 {value} はこの領域なので、すべての評価がこの定数の予測になる。"
+#: 層化の不足の警告 (N12)。クラスの点数が分割数より少ないと、そのクラスの点が検証データに入らない fold が出る。
+#: テンプレートは .format で埋める (f-string にしない)。配線のテストは tests/test_tuning_small_data.py。
+# claim: T-7
+STRATIFICATION_SHORTFALL_NOTE = (
+    "訓練データで最も点数の少ないクラスは {smallest} 点しかなく、CV の分割数 {n_splits} より少ない。"
+    "{n_splits} 個の fold のうち、そのクラスの点が 1 つも入らない検証データが出て、クラスの割合を保つ分け方"
+    " (層化) が成り立たない。その fold のスコアは偏り、fold 間のばらつきも大きくなる。"
+    "ROC AUC では、その fold は評価が計算できず NaN になる。"
+    "分割数を小さくするか、サンプル数を増やす。"
+)
 
 
 def fmt_value(v: Any) -> str:
@@ -68,3 +78,11 @@ def small_data_messages(model_class_name: str, specs: list[ParamSpec], fixed: di
             tail = SMALL_DATA_FIXED_TAIL.format(value=fmt_value(fixed[n.param]))
         out.append(template.format(threshold=n.threshold, n_max=n.n_fold_train_max, tail=tail))
     return out
+
+
+def stratification_message(y_train: np.ndarray, n_splits: int) -> str | None:
+    """層化の不足 (N12) の警告文。最小のクラスの点数が分割数より少ないときだけ返す (判定は small_data.stratification_shortfall)。"""
+    shortfall = small_data.stratification_shortfall(y_train, n_splits)
+    if shortfall is None:
+        return None
+    return STRATIFICATION_SHORTFALL_NOTE.format(smallest=shortfall.smallest_class, n_splits=shortfall.n_splits)

@@ -14,7 +14,14 @@ import numpy as np
 import pandas as pd
 import streamlit as st
 
-from app_pages.tuning_text import SCORING_LABELS, fmt_value, scoring_help, small_data_messages, test_se_caption
+from app_pages.tuning_text import (
+    SCORING_LABELS,
+    fmt_value,
+    scoring_help,
+    small_data_messages,
+    stratification_message,
+    test_se_caption,
+)
 from common.data import current_config, load_data, render_data_card
 from data.generator import DataConfig
 from models import MODEL_REGISTRY
@@ -115,11 +122,6 @@ TEST_PAIRED_NOTES = (
 TEST_PAIRED_AUC_CAPTION = ("ROC AUC では、点ごとの正解が決まらないので、この比較は出さない。"
                            "正解率に切り替えて探索し直すと確かめられる。")
 SAME_PARAMS_LABEL = "同じパラメータ (比べない)"
-#: N12 の文 (配線は段階 C。T-7 もそのとき登録する)。f-string にしない。
-SMALL_CLASS_NOTE = (
-    "訓練データの中で一番少ないクラスが {smallest} 点で、k = {k} より少ない。fold に少数派が入らないものができる。"
-    "ROC AUC では、その fold の評価が計算できず NaN になる。正解率では、fold ごとの点数が不安定になる。"
-)
 
 
 # ---------------------------------------------------------------------------
@@ -510,6 +512,8 @@ with st.sidebar:
     ))
     for note in small_data_messages(cls.__name__, axis_specs, fixed, y_train, int(n_splits), search_seed):
         st.info(note)
+    if (shortfall_note := stratification_message(y_train, int(n_splits))) is not None:
+        st.warning(shortfall_note)
     want_surface = st.checkbox(
         f"{SURFACE_LABEL}も計算する", value=budget.surface_default, key=f"{ns}.surface", persist_state=PS,
         help="粗い固定グリッドの全点を交差検証した参考値 (比較用の背景。探索手法はこれを知らない)。"

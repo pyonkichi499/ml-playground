@@ -15,7 +15,7 @@ n は式ではなく、`make_cv(k, seed)` の実際の分割から取る (層化
 新しいモデルを登録すると、そのテストが落ちて、作者は「点数に比例するか」を書かされる (models/ には触らずに済む)。
 
 N12: `stratification_shortfall` は、最小のクラスの点数が k 未満のとき (sklearn の StratifiedKFold が警告するとき) を返す。
-クラスの数に依らない。evaluate() は UserWarning を捨てるので、この警告は画面に届かない。画面への配線は段階 C。
+クラスの数に依らない。evaluate() は UserWarning を捨てるので、この警告は画面に届かない。画面への配線は app_pages/tuning.py のサイドバーが行い、`stratification_message` の文を出す。
 """
 
 from collections.abc import Mapping, Sequence
