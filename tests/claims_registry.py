@@ -599,6 +599,11 @@ CLAIMS: dict[str, dict] = {
         "summary": "GB の OOB 推定は訓練の損失とほぼ同じで、木の数選びには使えない (scale のみ)",
         "required": ("test",),  # K>2: 変わらない。付け先なし (st.caption)。scale のテストだけが支える
     },
+    "M-ADA-1": {
+        "kind": "text",
+        "summary": "AdaBoost は、直前の木が間違えた点の重みを次の木で増やし、当てた点の重みを減らす (2 クラス。SAMME)",
+        "required": ("test", "ui"),  # K>2: 変わらない (SAMME の更新式は K クラスでも同じ形)。2 クラスの合計 0.5 は UI に出さない
+    },
     "M-MLP-4": {
         "kind": "text",
         "summary": "活性化関数が identity なら、何層重ねても境界は直線",

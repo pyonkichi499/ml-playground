@@ -29,6 +29,7 @@ GAUSS = "ガウス生成モデル (Naive Bayes / LDA / QDA)"
 DT = "決定木 (Decision Tree)"
 RF = "ランダムフォレスト (Random Forest)"
 GB = "勾配ブースティング (Gradient Boosting)"
+ADA = "アダブースト (AdaBoost)"
 SVM = "サポートベクターマシン (SVM)"
 MLP = "ニューラルネットワーク (MLP)"
 
@@ -55,6 +56,7 @@ OLD_TABLE: list[tuple[str, dict[str, Any] | None, bool, str | None]] = [
     (DT, None, True, OLD_NO_EFFECT), (DT, None, False, None),
     (RF, None, True, OLD_NO_EFFECT), (RF, None, False, None),
     (GB, None, True, OLD_NO_EFFECT), (GB, None, False, None),
+    (ADA, None, True, OLD_NO_EFFECT), (ADA, None, False, None),
     (SVM, None, True, None), (SVM, None, False, None),
     (MLP, None, True, OLD_BUILTIN), (MLP, None, False, None),
     # Gaussian: UI から届く形 (variant と reg_param を必ず含む。残りは default_params)
@@ -115,7 +117,7 @@ def test_page_notes_cover_every_kind():
 # ---------------------------------------------------------------------------
 #: 独立に書いた期待 (AD-14.4)。Gaussian は (variant, reg_param > 0 か) ごと。k-NN・SVM は scale_sensitive なので対象外
 EXPECTED_KIND: dict[str, str] = {
-    DT: "invariant", RF: "invariant", GB: "invariant",  # 特徴量ごとの拡大縮小で (丸めを除いて) 結果が変わらない
+    DT: "invariant", RF: "invariant", GB: "invariant", ADA: "invariant",  # 特徴量ごとの拡大縮小で (丸めを除いて) 結果が変わらない
     LOGREG: "built_in", MLP: "built_in",  # build() の Pipeline の中ですでに標準化している
 }
 EXPECTED_GAUSS_KIND: dict[tuple[str, bool], str] = {

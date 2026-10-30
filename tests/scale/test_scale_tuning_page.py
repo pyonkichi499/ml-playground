@@ -134,8 +134,8 @@ def test_nan_helpers_parse_engine_error_texts():
 
 
 def test_every_tunable_model_is_covered():
-    """探索できるモデル (数値パラメータを持つもの) がすべて対象になっていること。今は 8 モデル。"""
-    assert len(TUNABLE) == len(MODEL_REGISTRY) == 8
+    """探索できるモデル (数値パラメータを持つもの) がすべて対象になっていること。今は 9 モデル。"""
+    assert len(TUNABLE) == len(MODEL_REGISTRY) == 9
 
 
 @pytest.mark.parametrize("dataset", DATASETS_UNDER_TEST)

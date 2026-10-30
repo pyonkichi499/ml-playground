@@ -1,4 +1,4 @@
-"""大規模な検証 (AD-17 (a)): 8 モデル × 全データセット × corner_params 規則の組で、プレイグラウンドと同じ処理が動くこと。
+"""大規模な検証 (AD-17 (a)): 9 モデル × 全データセット × corner_params 規則の組で、プレイグラウンドと同じ処理が動くこと。
 
 - データ: 合成データはアプリの上限 n=1000 (noise 0.2、seed 0、テスト 0.3)。実データは件数固定 (seed 0、テスト 0.3)。
   DATASETS を列挙するので、登録されたデータセットは自動で対象になる。
@@ -80,17 +80,17 @@ CASES = [
 #: search_space や corner_params が変わると件数が変わり、予算の見積もりも変わるので、ここで落ちて気づけるようにする
 EXPECTED_CASES_PER_DATASET = {
     "LogisticRegressionModel": 7, "KNNModel": 8, "GaussianModel": 4, "DecisionTreeModel": 8,
-    "RandomForestModel": 13, "GradientBoostingModel": 13, "SVMModel": 10, "MLPModel": 15,
-}  # 合計 78
+    "RandomForestModel": 13, "GradientBoostingModel": 13, "AdaBoostModel": 10, "SVMModel": 10, "MLPModel": 15,
+}  # 合計 88
 
 
 def test_case_count_matches_corner_params_rule():
-    """件数が AD-17 で見積もった値 (1 データセットあたり 78 件、DATASETS の 7 データセットで 546 件。データセット数は DATASETS から数える) のままであること。
-    546 件は test_model_at_scale の件数 (CASES)。このテスト自身の 1 件を足したファイル全体の収集件数は 547。"""
+    """件数が AD-17 で見積もった値 (1 データセットあたり 88 件、DATASETS の 7 データセットで 616 件。データセット数は DATASETS から数える) のままであること。
+    616 件は test_model_at_scale の件数 (CASES)。このテスト自身の 1 件を足したファイル全体の収集件数は 617。"""
     got = {cls.__name__: len(params_cases(cls)) for cls in MODEL_REGISTRY.values()}
     assert got == EXPECTED_CASES_PER_DATASET
-    assert sum(EXPECTED_CASES_PER_DATASET.values()) == 78
-    assert len(CASES) == 78 * len(DATASETS)
+    assert sum(EXPECTED_CASES_PER_DATASET.values()) == 88
+    assert len(CASES) == 88 * len(DATASETS)
 
 
 @pytest.mark.parametrize("model_name, dataset, params", CASES)

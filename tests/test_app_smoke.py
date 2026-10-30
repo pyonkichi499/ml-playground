@@ -37,10 +37,11 @@ GAUSS = "ガウス生成モデル (Naive Bayes / LDA / QDA)"
 DT = "決定木 (Decision Tree)"
 RF = "ランダムフォレスト (Random Forest)"
 GB = "勾配ブースティング (Gradient Boosting)"
+ADA = "アダブースト (AdaBoost)"
 SVM = "サポートベクターマシン (SVM)"
 MLP = "ニューラルネットワーク (MLP)"
 #: 教える順 = メニューの並び順。登録漏れがあればここで大きく失敗させる
-MODELS = (LOGREG, KNN, GAUSS, DT, RF, GB, SVM, MLP)
+MODELS = (LOGREG, KNN, GAUSS, DT, RF, GB, ADA, SVM, MLP)
 
 
 def step(at: AppTest, limit: float = HANG_LIMIT) -> AppTest:
@@ -172,6 +173,11 @@ WIDGET_CASES = [
     ("rf-no-bootstrap", RF, {}, [_set("checkbox", "RandomForestModel.bootstrap", False)]),
     ("gb-subsample", GB, {}, [_set("select_slider", "GradientBoostingModel.subsample", 0.7)]),
     ("gb-one-tree", GB, {}, [_set("select_slider", "GradientBoostingModel.n_estimators", 1)]),
+    ("ada-depth3-lr", ADA, {}, [
+        _set("slider", "AdaBoostModel.base_depth", 3),
+        _set("select_slider", "AdaBoostModel.learning_rate", 0.1),
+    ]),
+    ("ada-one-tree", ADA, {}, [_set("select_slider", "AdaBoostModel.n_estimators", 1)]),
     ("svm-poly-degree5", SVM, {}, [
         _set("selectbox", "SVMModel.kernel", "poly"),
         _set("slider", "SVMModel.degree", 5),
@@ -594,7 +600,7 @@ def test_real_data_round_trip_and_data_card():
 
 
 @pytest.mark.claim("S1")
-@pytest.mark.parametrize("model_name, params", [(DT, {}), (RF, {}), (GB, {}), (GAUSS, {"variant": "lda"})])
+@pytest.mark.parametrize("model_name, params", [(DT, {}), (RF, {}), (GB, {}), (ADA, {}), (GAUSS, {"variant": "lda"})])
 def test_tree_family_and_lda_unchanged_by_per_feature_rescaling(model_name, params):
     """caption「特徴量ごとの拡大縮小で結果が変わりません」の裏づけ: Penguins (mm と g) の片方の単位を変えて学習し
     直しても、決定木・ランダムフォレスト・勾配ブースティング・LDA の予測は同じ (数値誤差の範囲)。標準化は適用されないので、フラグではなく特徴量を直接変える。

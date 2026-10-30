@@ -10,6 +10,7 @@ from models import (  # noqa: F401
     decision_tree,
     random_forest,
     gradient_boosting,
+    adaboost,
     svm,
     mlp,
 )

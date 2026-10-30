@@ -52,6 +52,11 @@ PARAM_RULES: dict[str, dict[str, str]] = {
         "max_depth": _NO_RULE + "各木の深さの上限 (最大 6)。点数に比例しない",
         "subsample": _NO_RULE + "各木に使う点の割合 (0.5〜1)。割合なので点数に比例しない",
     },
+    "AdaBoostModel": {
+        "learning_rate": _NO_RULE + "学習率。点数に比例しない",
+        "base_depth": _NO_RULE + "各木の深さの上限 (最大 4)。点数に比例しない",
+        "n_estimators": _NO_RULE + "木の数。増やしても定数予測になる境目はない",
+    },
     "SVMModel": {
         "C": _NO_RULE + "正則化の強さ。点数に比例しない",
         "gamma": _NO_RULE + "RBF の幅。点数に比例しない",

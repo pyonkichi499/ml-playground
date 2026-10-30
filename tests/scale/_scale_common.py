@@ -147,6 +147,7 @@ HANG_MODEL_CASE = 60.0
 HANG_PAGE_RUN = {
     "勾配ブースティング (Gradient Boosting)": 270.0,  # 53.4 s
     "ランダムフォレスト (Random Forest)": 230.0,  # 45.0 s
+    "アダブースト (AdaBoost)": 230.0,  # 未計測の暫定値 (同じ medium の RF に合わせた)。鳴海の較正で実測に直す
     "サポートベクターマシン (SVM)": 110.0,  # 21.1 s
     "ロジスティック回帰 (Logistic Regression)": 80.0,  # 15.9 s
     "ニューラルネットワーク (MLP)": 80.0,  # 15.7 s (全探索マップは既定でオフ)
