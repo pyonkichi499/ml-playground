@@ -1,5 +1,7 @@
 """AdaBoost (SAMME) の実装。2 クラス用。
 
+supports_multiclass は既定の False のままで、K>2 の fit は BaseModel が NotImplementedError にする。
+
 重みの付け直しで次の木を変えるブースティング。勾配ブースティング (誤差を足していく) と対比する。
 sklearn は各ラウンドのサンプル重みを保持しないので、図に出す重みは `sample_weights_by_round` で自前に再計算する
 (式は sklearn の SAMME と同じ。テストが推定器の estimator_errors_ / estimator_weights_ と、木の予測の両方で照合する)。
@@ -69,7 +71,7 @@ class AdaBoostModel(BaseModel):
         "勾配ブースティングが「誤差を足していく」のに対し、こちらは「間違えた点に集中していく」。"
     )
     default_params = {"n_estimators": 50, "learning_rate": 1.0, "base_depth": 1}
-    tuning_cost = "medium"
+    tuning_cost = "medium"  # U1 の較正は未実施 (係数は既存 8 モデルで測った値)
     standardize_note_kind = "invariant"  # 木の分割は大小比較だけなので、丸めを除いて結果が変わらない (AD-14.4、S1)
     # チューニングページの固定値の初期値だけ。default_params と同じ値 (RF と同じ形で、探索の 1 評価を軽く保つ。AD-11)
     tuning_defaults = {"n_estimators": 50}

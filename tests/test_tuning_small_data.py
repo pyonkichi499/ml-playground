@@ -9,14 +9,14 @@ from pathlib import Path
 
 import numpy as np
 import pytest
-from streamlit.testing.v1 import AppTest
 from sklearn.ensemble import RandomForestClassifier
 from sklearn.linear_model import LogisticRegression
 from sklearn.model_selection import StratifiedKFold, cross_validate
 from sklearn.tree import DecisionTreeClassifier
+from streamlit.testing.v1 import AppTest
 
-import models  # noqa: F401  (レジストリを埋める)
 import common.data
+import models  # noqa: F401  (レジストリを埋める)
 from app_pages.tuning_text import stratification_message
 from data.generator import DataConfig
 from models.base import MODEL_REGISTRY, make_estimator
@@ -272,7 +272,7 @@ def test_stratification_shortfall_works_for_three_or_more_classes():
 
 
 # ------------------------------------------------------------ N12 の画面への配線 (段階 C4)
-# 出典: .team/sp/elif/mc_20261022/multiclass_design_rev2_20261022.md の N12。判定は上の stratification_shortfall のまま。
+# 出典: 多クラス設計の N12 (docs/decisions.md の N12)。判定は上の stratification_shortfall のまま。
 ROOT = Path(__file__).resolve().parents[1]
 APP = str(ROOT / "app.py")
 SHORTFALL_HEAD = "訓練データで最も点数の少ないクラスは"
@@ -327,7 +327,7 @@ def test_stratification_message_claim_matches_sklearn():
 @pytest.mark.claim("T-7")
 def test_stratification_message_roc_auc_is_nan_in_fold_without_the_class():
     """文の主張「ROC AUC ではその fold が NaN になる」を、cross_validate (error_score=nan) の実際の結果で確かめる。
-    出典: .team/sp/elif/mc_20261022/multiclass_design_rev2_20261022.md の N12 (旧 SMALL_CLASS_NOTE の文)。"""
+    出典: 多クラス設計の N12 (docs/decisions.md の N12。旧 SMALL_CLASS_NOTE の文)。"""
     rng = np.random.default_rng(0)
     y = np.array([0] * 30 + [1] * 4)
     X = rng.normal(size=(len(y), 2)) + y[:, None]

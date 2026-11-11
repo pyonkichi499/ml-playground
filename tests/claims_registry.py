@@ -602,7 +602,7 @@ CLAIMS: dict[str, dict] = {
     "M-ADA-1": {
         "kind": "text",
         "summary": "AdaBoost は、直前の木が間違えた点の重みを次の木で増やし、当てた点の重みを減らす (2 クラス。SAMME)",
-        "required": ("test", "ui"),  # K>2: 変わらない (SAMME の更新式は K クラスでも同じ形)。2 クラスの合計 0.5 は UI に出さない
+        "required": ("test", "ui"),  # K>2: 未確認 (現状は 2 クラスのみ)。2 クラスの合計 0.5 は UI に出さない
     },
     "M-MLP-4": {
         "kind": "text",

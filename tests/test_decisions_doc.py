@@ -6,7 +6,7 @@
 
 確かめること (向きは片方だけ: コードの参照が索引の項目を持つこと。索引の項目がすべて参照されているかは見ない。
 「（参照なし）」の項目は、却下した案などを残すために載せてよい):
-1. コードや文書に出てくる決定番号が、すべて decisions.md の見出し (### <番号> <題名>) にある。
+1. コードや文書に出てくる決定番号 (AD-n・U1・R-10・N<数字>) が、すべて decisions.md の見出し (### <番号> <題名>) にある。
 2. 本文の「### 」の行は、すべて番号で始まる (見出しの書き方を壊すと、番号が拾えないことをはっきり報告して落ちる)。
 3. 一覧 (表) の番号と、本文の見出しの番号が同じ。これは文書の内部の整合性で、コードの参照 (1) とは別。
 4. 番号の書き方が "AD-n" / "AD-n.m" / "AD-nx" の形だけ ("AD 14.4" のような別の書き方を許さない)。
@@ -31,8 +31,13 @@ PLAIN = re.compile(NUMBER)
 # U 系は U2 など今後の番号も拾う。R 系は charter の R-06 などと紛れるので R-10 だけ。R-11 などが増えたらここに足す
 OTHER = re.compile(r"(?<![A-Za-z0-9_-])(U\d+|R-10)(?![A-Za-z0-9_-])")
 BAD_SPELLING = re.compile(r"\bAD[ _]?\d|ＡＤ")  # 単語の先頭の AD だけ (LOAD 5 や HEAD 1 は除く)
-# 見出し・表には N15 (指標の登録表) のような「N<数字>」も置ける。コード側の抽出 (NUMBER・OTHER) には入れない:
-# 「ゲート N2」「レビュー N1」のように別の意味の N<数字> がコメントにあり、拾うと誤って落ちるため。
+# 「N8」「N13(b)」のような N<数字> の番号 (指標の登録表 N15、確認の表 N8 など) も、コード側から引けるようにする。
+# 「ゲート N2」「レビュー N1」のように、別の意味 (ゲート・レビューの指摘の番号) で N<数字> がコメントにあるので、
+# その 2 つの語が直前につく形と、ruff の「# noqa: N806」(pep8-naming の規則番号) は先に取り除いてから拾う。
+# 新しい別の意味の語が増えたら OTHER_N に足す。
+# 「N13(b)」の (b) は項目の中の小番号で、番号は N13 として引く。
+N_NUMBER = re.compile(r"(?<![A-Za-z0-9_-])N\d+(?![A-Za-z0-9_])")
+OTHER_N = re.compile(r"(?:ゲート|レビュー)\s*N\d+|noqa:\s*[A-Z]+\d+(?:\s*,\s*[A-Z]+\d+)*")
 HEADING = re.compile(r"^### (AD-\d+(?:\.\d+)?[a-z]?|U1|R-10|R1|N\d+)\b(.*)$", re.M)
 ANY_HEADING = re.compile(r"^### .*$", re.M)
 TABLE_ROW = re.compile(r"^\| (AD-\d+(?:\.\d+)?[a-z]?|U1|R-10|R1|N\d+) \|", re.M)
@@ -53,6 +58,7 @@ def source_files(root: Path) -> list[Path]:
 def numbers_in_text(text: str) -> set[str]:
     """1 つの文字列に出てくる決定番号 (複合の書き方を展開する)。"""
     found = set(PLAIN.findall(text)) | set(OTHER.findall(text))
+    found |= set(N_NUMBER.findall(OTHER_N.sub("", text)))
     for match in COMPOUND.finditer(text):
         for extra in re.findall(r"\d+(?:\.\d+)?[a-z]?", match.group(2)):
             found.add(f"AD-{extra}")
@@ -194,3 +200,35 @@ def test_n_number_heading_and_row_are_parsed_and_must_agree(tmp_path):
     assert "N15" in headings and "N15" in table and unparsed == []
     root2 = _tree(tmp_path / "x", {"docs/decisions.md": doc.replace("### N15 e\n", ""), "a.py": "# AD-1\n"})
     assert any("表だけ ['N15']" in p for p in problems(root2))
+
+
+# ---- N<数字> の参照の検出 (コード側。「N8〜N16」型) -----------------------------------
+def test_n_references_are_extracted_but_gate_and_review_numbers_are_not():
+    assert numbers_in_text("(N8)。K を引数にとる") == {"N8"}
+    assert numbers_in_text("N13(b): 深さが 4 を超える木") == {"N13"}
+    assert numbers_in_text("N12 層化の判定、(N16 契約)、N9: 深さ") == {"N12", "N16", "N9"}
+    assert numbers_in_text("(ゲート N2)、(ゲート N3)、(レビュー N1)") == set()  # 別の意味の N<数字>
+    assert numbers_in_text("x = 1  # noqa: N806 (理由)、# noqa: E501, N802") == set()  # ruff の規則番号
+    assert numbers_in_text("ゲート N2 と N10") == {"N10"}  # 同じ行の本物は拾う
+    assert numbers_in_text("HN8、AN8、N8x、a-N8、n=800、N") == set()
+
+
+def test_negative_n_reference_missing_from_the_doc(tmp_path):
+    """コードが N9 を参照しているのに、decisions.md に見出しが無いと落ちる (N15 だけ見出しがある状態の再現)。"""
+    doc = DOC.replace("| U1 | d | w |\n", "| U1 | d | w |\n| N15 | e | v |\n") + "### N15 e\n"
+    root = _tree(tmp_path, {"docs/decisions.md": doc, "a.py": "# AD-1 と N15\n# (N9)\n# (ゲート N2)\n"})
+    found = problems(root)
+    assert any("a.py:2" in p and "N9" in p for p in found)
+    assert not any("N2" in p or "N15" in p for p in found)
+
+
+def test_n_reference_found_in_a_docstring_and_resolved_by_heading(tmp_path):
+    doc = DOC.replace("| U1 | d | w |\n", "| U1 | d | w |\n| N9 | e | v |\n") + "### N9 e\n"
+    root = _tree(tmp_path, {"docs/decisions.md": doc, "a.py": '"""説明 (N9)。"""\n'})
+    assert problems(root) == []
+    assert "N9" in code_numbers(root)
+
+
+def test_real_tree_n_references_are_detected():
+    """実物で N<数字> の検出が空振りしていない (scoring.py などの N15 の参照が見つかる)。見出しの有無は上の突き合わせが見る。"""
+    assert "N15" in code_numbers(ROOT)

@@ -476,8 +476,8 @@ def estimate_run_seconds(
     - 全探索マップ: evaluate_many と同じ判定で直列 / 並列を決める。並列なら
       t (先頭の直列 1 セル) + PARALLEL_FIXED_SECONDS + t × (セル数 − 1) ÷ (max_jobs() × PARALLEL_EFFICIENCY)
       + ワーカー未起動なら WORKER_STARTUP_SECONDS。
-    係数は 4 並列 (AD-16)、Moons n=200、5-fold、load 2〜5 で全 8 モデルを実測して決めた (U1 の較正。各定数の
-    コメント参照)。timing のテストで「実測 ÷ 推定」∈ [0.5, 2] を確認する。過小評価の方が害が大きいので多めに倒してある。
+    係数は 4 並列 (AD-16)、Moons n=200、5-fold、load 2〜5 で当時の 8 モデル (AdaBoost の追加前) を実測して決めた
+    (U1 の較正。AdaBoost は未較正。各定数のコメント参照)。timing のテストで「実測 ÷ 推定」∈ [0.5, 2] を確認する。過小評価の方が害が大きいので多めに倒してある。
     """
     t = measure_eval_seconds(config, X, y) if per_eval is None else float(per_eval)
     search = t * expected_evaluations(config)
