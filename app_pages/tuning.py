@@ -23,6 +23,7 @@ from app_pages.tuning_text import (
     test_se_caption,
 )
 from common.data import current_config, load_data, render_data_card
+from common.multiclass_gate import unsupported_multiclass_message
 from data.generator import DataConfig
 from models import MODEL_REGISTRY
 from models.base import Bounds, PlotContext
@@ -566,6 +567,10 @@ with st.sidebar:
 st.title("ハイパーパラメータ探索")
 st.caption(f"{data_config.dataset} × {model_name}　／　訓練 {len(X_train)} 点・テスト {len(X_test)} 点")
 render_data_card(data_config)  # 実データの説明とクラスの対応 (正本は common/data.py。合成データでは何も描かない)
+if (gate_message := unsupported_multiclass_message(model_name, cls.supports_multiclass, y_train)) is not None:
+    # 結果の図が fit を使うので、未対応モデルは探索ページ全体を止める (サイドバーは描き終えている)
+    st.info(gate_message)
+    st.stop()
 
 if run_clicked:
     st.session_state[TAB_KEY] = TABS[2]

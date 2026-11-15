@@ -19,7 +19,7 @@ from data.synthetic import CIRCLES, LINEAR, MOONS, make_circles_data, make_linea
 
 __all__ = [
     "DATASETS", "DataConfig", "Dataset", "DatasetSpec", "DuplicateStats", "FeatureSpec", "GeneratorFn", "LoaderFn",
-    "TOY_FEATURES", "class_balance", "duplicate_stats", "generate", "is_imbalanced",
+    "TOY_FEATURES", "check_labels", "class_balance", "duplicate_stats", "generate", "is_imbalanced",
     "make_circles_data", "make_linear_data", "make_moons_data",
 ]
 
@@ -50,6 +50,24 @@ def is_imbalanced(y: np.ndarray, threshold: float = 0.4) -> bool:
     """少数派の割合が threshold 未満なら True (空なら False)。"""
     balance = class_balance(y)
     return bool(balance < threshold) if not np.isnan(balance) else False
+
+
+def check_labels(y_train: np.ndarray, y_test: np.ndarray, *, n_classes: int = 2, name: str = "") -> None:
+    """load の出口の契約: ラベルは整数型で、訓練に 0..n_classes-1 が過不足なく揃い、テストはその部分集合。
+
+    破れたら ValueError (データ生成側のバグ。利用者が直せないので FitError にはしない)。
+    下流 (np.bincount・BaseModel.fit の max+1・scoring の unique) が同じクラス数を見るための見張り。
+    """
+    expected = set(range(n_classes))
+    for part, y in (("train", y_train), ("test", y_test)):
+        if y.dtype.kind not in "iu":
+            raise ValueError(f"{name}: y_{part} must be integer labels, got dtype {y.dtype}")
+    found = set(np.unique(y_train).tolist())
+    if found != expected:
+        raise ValueError(f"{name}: y_train labels must be exactly {sorted(expected)}, got {sorted(found)}")
+    extra = set(np.unique(y_test).tolist()) - expected
+    if extra:
+        raise ValueError(f"{name}: y_test has labels outside {sorted(expected)}: {sorted(extra)}")
 
 
 @dataclass(frozen=True)
@@ -146,5 +164,10 @@ class DataConfig:
         else:
             X, y = spec.generator(config.n_samples, config.noise, config.seed)
         if config.test_size == 0:
-            return X, X[:0], y, y[:0]
-        return train_test_split(X, y, test_size=config.test_size, random_state=config.seed, stratify=y)
+            X_train, X_test, y_train, y_test = X, X[:0], y, y[:0]
+        else:
+            X_train, X_test, y_train, y_test = train_test_split(
+                X, y, test_size=config.test_size, random_state=config.seed, stratify=y
+            )
+        check_labels(y_train, y_test, name=config.dataset)
+        return X_train, X_test, y_train, y_test

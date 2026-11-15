@@ -7,6 +7,7 @@ from sklearn.metrics import accuracy_score
 
 from common.confusion import confusion_counts, confusion_figure, recall_per_class
 from common.data import current_config, load_data, render_data_card
+from common.multiclass_gate import unsupported_multiclass_message
 from models import MODEL_REGISTRY
 from models.base import FitError, PlotContext
 
@@ -90,6 +91,11 @@ if model.summary:
 note = standardize_note(model, params, config.standardize)
 if note:
     st.caption(note)
+
+if (gate_message := unsupported_multiclass_message(model_name, model.supports_multiclass, y_train)) is not None:
+    # 未対応モデルは fit の前に止める。NotImplementedError は捕まえない (捕まえるのは FitError だけ。規則 12)
+    st.info(gate_message)
+    st.stop()
 
 try:
     model.fit(X_train, y_train, params, standardize=config.standardize)
