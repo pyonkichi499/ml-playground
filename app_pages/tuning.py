@@ -40,6 +40,13 @@ PARTIAL_KEY = "tuning_partial"  # 実行中に 1 試行ずつ追記する。完�
 SURFACE_LABEL = "全探索マップ（参考）"
 MIN_VALIDATION_POINTS = 10  # 1 fold の検証データがこれ未満なら警告する
 TAB_KEY = "tuning.tab"
+# claim: T-9
+TUNING_INTRO = (
+    "ハイパーパラメータ = 学習で決まる値（重み）とは別に、人があらかじめ決める設定値（例: k-NN の k）。"
+    "このページは、その値を探す 3 つの手法（グリッドサーチ / ランダムサーチ / TPE）を比べます。"
+    "流れ: サイドバーで設定 → 「探索を実行」 → ③ で比較 → ④ でテストの評価。"
+    "試せる実験は「おすすめの実験」の実験 9・10 にあります。"
+)
 TABS = ["① データの分け方", "② 1つのパラメータ（検証曲線）", "③ 探索の比較", "④ テストで最終評価"]
 NONE_LABEL = "なし"
 RACE_X_OPTIONS = {"trial": "試行番号", "time": "累積学習時間"}
@@ -566,6 +573,7 @@ with st.sidebar:
 # ---------------------------------------------------------------------------
 st.title("ハイパーパラメータ探索")
 st.caption(f"{data_config.dataset} × {model_name}　／　訓練 {len(X_train)} 点・テスト {len(X_test)} 点")
+st.caption(TUNING_INTRO)
 render_data_card(data_config)  # 実データの説明とクラスの対応 (正本は common/data.py。合成データでは何も描かない)
 if (gate_message := unsupported_multiclass_message(model_name, cls.supports_multiclass, y_train)) is not None:
     # 結果の図が fit を使うので、未対応モデルは探索ページ全体を止める (サイドバーは描き終えている)
@@ -593,7 +601,7 @@ with tab_split:
 - **テストデータ** ({len(X_test)} 点): 探索には一切使わず、最後に選んだ設定を 1 回だけ評価する（④）。
 """
         )
-        st.caption("各 fold のクラス比は全体とほぼ同じになるよう分けている (層化 k-fold)。"
+        st.caption("各 fold のクラス比は全体とほぼ同じになるよう分けている (層化 k-fold。層化 = クラスの比をそろえること)。"
                    f"すべての探索手法・{SURFACE_LABEL}・検証曲線で同じ分け方を使うので、スコアを公平に比べられる。")
         st.caption("標準化などの前処理はモデルの Pipeline の中にあり、fold ごとに学習用の部分だけで作り直す。"
                    "全データで先に標準化してから CV すると、検証用の点の情報が学習側に漏れて、スコアが甘くなる。")

@@ -40,7 +40,8 @@ NONNEGATIVE_ACTIVATIONS = ("relu", "logistic")
 ZERO_LINE_COLOR = "#333333"
 
 # 収束「いいえ」のときだけ、損失曲線のキャプションの先頭に付く文
-NOT_CONVERGED_NOTE = "収束「いいえ」: 損失の改善が止まったと判定される前に、エポック数の上限 (max_iter, 紫の破線) に達して学習を打ち切りました。"
+# claim: M-MLP-5
+NOT_CONVERGED_NOTE = "収束「いいえ」: 損失の改善が止まったと判定される前に、エポック数の上限 (max_iter, 紫の破線) に達して学習を打ち切りました。損失はまだ下がり続けている途中かもしれません。max_iter を上げると、さらに下がり、決定境界が変わることがあります。"
 # 損失曲線は訓練データの損失だけ。収束の有無に関係なく常に出す
 # claim: M-MLP-1
 LOSS_CURVE_NOTE = (

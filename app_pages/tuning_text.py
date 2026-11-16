@@ -43,12 +43,15 @@ def fmt_value(v: Any) -> str:
     return plots.format_value(v)
 
 
+# claim: T-8
 def scoring_help(y_train: np.ndarray) -> str:
     """評価指標のヘルプ。クラスの偏りは訓練データのラベルから導く (層化分割なのでテストとほぼ同じ比)。"""
     if is_imbalanced(y_train):
         majority = 1.0 - class_balance(y_train)
         return (f"このデータはクラスが偏っている (多数派 {majority:.0%})。accuracy だと、多数派を当てるだけで "
-                f"{majority:.2f} になる。ROC AUC はこの影響を受けにくいので、手法どうしを比べやすい。")
+                f"{majority:.2f} になる。ROC AUC はこの影響を受けにくいので、手法どうしを比べやすい"
+                "（ROC AUC = ランダムに選んだ class 1 の点が class 0 の点より高く順位づけられる確率。"
+                "点は、モデルの class 1 のスコアで順位づける。0.5 で当てずっぽう、1 で完全）。")
     return ("このデータは 2 クラスがほぼ半々なので、正解率 (accuracy) で比べてよい。クラスが偏っていると、"
             "全部多数派と答えるだけで正解率が高く出るため、ROC AUC・F1・balanced accuracy などを使う。")
 

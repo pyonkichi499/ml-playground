@@ -507,7 +507,7 @@ def test_svm_on_penguins_standardize_changes_the_boundary():
     assert (on["サポートベクター数"], on["テストデータの正解率"]) != (off["サポートベクター数"], off["テストデータの正解率"]), detail
     # 標準化が効かないモデルでは、標準化 on のとき理由を説明する。言い方はモデルで違う (AD-14.4 の訂正)
     MARK = "「特徴量を標準化する」は結果"  # 標準化が効かないモデルの caption 共通の書き出し
-    NEW = "特徴量ごとの拡大縮小で、数値の丸めによる違いを除いて結果が変わりません"
+    NEW = "特徴量ごとの拡大縮小に左右されないモデルのためです。数値の丸めによる違いは除きます"
     unit_note = "単位によって結果が変わることがあります。このモデルには標準化を適用していません。"
     assert not [c for c in at.caption if MARK in c.value]  # SVM は効くので出ない
     at.sidebar.checkbox(key="data.real.standardize").check()
@@ -515,7 +515,7 @@ def test_svm_on_penguins_standardize_changes_the_boundary():
     step(at)
     note = [c.value for c in at.caption if MARK in c.value]
     assert len(note) == 1 and NEW in note[0], note
-    assert "結果をほとんど変えません" in note[0] and "現実的な単位の範囲" not in note[0] and "Naive Bayes" not in note[0], note
+    assert "結果を変えません" in note[0] and "現実的な単位の範囲" not in note[0] and "Naive Bayes" not in note[0], note
     assert not any(unit_note in c.value for c in at.caption)
     at.sidebar.selectbox(key="playground.model").set_value(LOGREG)
     step(at)

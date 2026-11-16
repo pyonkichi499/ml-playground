@@ -9,8 +9,11 @@
 MLP (実験 8) と勾配ブースティング (実験 6) は OS・BLAS で 1 点ずれうるので、正解率は ±1 点の許容で見る。
 測定値の日付と版: 2026-10-07、scikit-learn 1.9.1、numpy 2.5.3、WSL2。時間の目安は全体で十数秒 (assert は時間を見ない)。
 複数シードの数値 (X4-3・X7-4・X9-5・X9-6) は tests/scale/test_experiments_multiseed.py。表の中の数値 (T) は、K5 の表への拡張の後 (P6)。
+末尾に実験 11・12 の N2 の数値 (X11-1・X12-5) を足した (2026-11-08、scikit-learn 1.9.1、numpy 2.5.3)。X12-5 のシード 0〜199 の幅は
+tests/scale/test_experiment12_iris_cv_seeds.py。
 """
 
+from decimal import ROUND_HALF_UP, Decimal
 from pathlib import Path
 
 import matplotlib
@@ -19,6 +22,7 @@ matplotlib.use("Agg")
 
 import numpy as np  # noqa: E402
 import pytest  # noqa: E402
+from sklearn.model_selection import StratifiedKFold, cross_val_score  # noqa: E402
 
 import models  # noqa: E402,F401
 from data.generator import DataConfig  # noqa: E402
@@ -562,3 +566,72 @@ def test_x10_table_se_independent():
     for correct, expected in ((124, 0.031), (132, 0.027)):
         p = correct / 150
         assert round(sqrt(p * (1 - p) / 150), 3) == expected
+
+
+# ---- 実験 11: Palmer Penguins の標準化 (N2(b)、SVM の gamma) ----------------------------------------------------
+
+def penguins_mass():
+    """実験 11 の設定: Penguins、くちばしの長さ × 体重、シード 42、テスト 0.30 (訓練 153 / テスト 66)。
+    load() は標準化しない (生の単位)。標準化の ON / OFF は make_estimator の第 3 引数だけで決まる。"""
+    return DataConfig("Palmer Penguins", None, None, 42, 0.30, ("bill_length_mm", "body_mass_g")).load()
+
+
+@pytest.mark.claim("X11-1")
+def test_x11_svm_raw_units_gamma_majority_and_nearest_distance():
+    """標準化 OFF の SVM (既定の rbf・C = 1・gamma = 1) はテスト 0.727 で、多数派を当てるだけ (このテスト 66 点で 0.697) に近い。
+    gamma = 0.01 でも 0.803 までで、標準化 ON (gamma = 1) の 0.970 に届かない。テストの点から最も近い訓練点までの
+    距離 (生の単位) の中央値は約 2.8。
+    出典: docs/experiments.md 実験 11 の「観察すること」と「なぜそうなるか」(claim X11-1)。"""
+    assert {k: SVMModel.default_params[k] for k in ("kernel", "C", "gamma")} == {"kernel": "rbf", "C": 1.0, "gamma": 1.0}
+    Xtr, Xte, ytr, yte = penguins_mass()
+    assert (len(ytr), len(yte)) == (153, 66)
+    assert r3((yte == 0).mean()) == 0.697
+    off = {g: r3(acc(make_estimator(SVMModel(), {"gamma": g}, False).fit(Xtr, ytr), Xte, yte)) for g in (1.0, 0.01)}
+    assert off == {1.0: 0.727, 0.01: 0.803}
+    nearest = np.sqrt(((Xte[:, None, :] - Xtr[None, :, :]) ** 2).sum(axis=-1)).min(axis=1)
+    # 中央値は 2.75 (2026-11-11 測定)。実験 12 と同じく四捨五入で 2.8 (round は偶数丸めなので Decimal で丸める)
+    median = Decimal(repr(float(np.median(nearest))))
+    assert median.quantize(Decimal("0.1"), rounding=ROUND_HALF_UP) == Decimal("2.8"), median
+    assert r3(acc(make_estimator(SVMModel(), {}, True).fit(Xtr, ytr), Xte, yte)) == 0.97
+
+
+# ---- 実験 12: Iris の特徴量の組 (N2(a)、繰り返しの交差検証) ----------------------------------------------------
+
+IRIS_PAIRS = {"petal": ("petal_length", "petal_width"), "sepal": ("sepal_length", "sepal_width")}
+IRIS_MODELS = {"knn": KNNModel, "lr": LogisticRegressionModel}
+
+
+def iris_repeated_cv(pair, model_name, seeds):
+    """Iris の 100 点全体 (テスト 0) に、層化 5-fold (shuffle、random_state = シード) を 1 回ずつ。シードごとの 5 fold の平均を返す。
+    k-NN は既定 (k = 5・uniform) で標準化なし、ロジスティック回帰は既定 (C = 1・次数 1) で、build() の標準化を内蔵。"""
+    X, _, y, _ = DataConfig("Iris", None, None, 42, 0.0, IRIS_PAIRS[pair]).load()
+    assert len(y) == 100
+    est = make_estimator(IRIS_MODELS[model_name](), {}, False)
+    return np.array([cross_val_score(est, X, y, cv=StratifiedKFold(5, shuffle=True, random_state=s)).mean() for s in seeds])
+
+
+def hits_of_100_folds(mean_over_100_folds) -> int:
+    """1 fold は 20 点なので、100 fold (5-fold × 20 回) の平均 × 2000 は、正解の点数の合計 (整数)。"""
+    value = float(mean_over_100_folds) * 2000
+    assert abs(value - round(value)) < 1e-6, value
+    return round(value)
+
+
+@pytest.mark.claim("X12-5")
+def test_x12_iris_repeated_cv_means_for_seeds_0_to_19():
+    """5-fold × 20 回 (シード 0〜19) の平均: k-NN は花弁 約 0.945・がく片 約 0.649、ロジスティック回帰は 約 0.937・約 0.726。
+    がく片の組は、どちらのモデルでも花弁の組に届かない。
+    出典: docs/experiments.md 実験 12 の「観察すること」(claim X12-5)。正解の点数の合計 (2000 点中) を固定する。
+    丸めの規則: 文書の値は、正確な値 (合計 / 2000) の小数第 4 位を四捨五入する (文書にも注記)。1297 / 2000 = 0.6485 →
+    0.649、1873 / 2000 = 0.9365 → 0.937。浮動小数点の round は 0.9365 を 0.936 にするので、Decimal で丸める。"""
+    expected = {  # (組, モデル): (2000 点中の正解の合計, 文書の値)
+        ("petal", "knn"): (1890, "0.945"), ("sepal", "knn"): (1297, "0.649"),
+        ("petal", "lr"): (1873, "0.937"), ("sepal", "lr"): (1452, "0.726"),
+    }
+    got = {key: hits_of_100_folds(iris_repeated_cv(*key, range(20)).mean()) for key in expected}
+    assert got == {key: hits for key, (hits, _) in expected.items()}, got
+    for key, (hits, doc) in expected.items():
+        exact = Decimal(hits) / Decimal(2000)
+        assert exact.quantize(Decimal("0.001"), rounding=ROUND_HALF_UP) == Decimal(doc), (key, hits, doc)
+    for model_name in IRIS_MODELS:
+        assert got[("sepal", model_name)] < got[("petal", model_name)]

@@ -60,7 +60,9 @@ def render_data_sidebar() -> DataConfig:
         # 既定は実データで on、合成データで off。種類ごとに key を分け、利用者が変えた値を上書きしない (AD-14.3)
         kind = "real" if real else "synthetic"
         standardize = st.checkbox("特徴量を標準化する（距離を使う k-NN・SVM に効く）", value=real,
-                                  key=f"data.{kind}.standardize", persist_state=PS)
+                                  key=f"data.{kind}.standardize", persist_state=PS,
+                                  help="標準化 = 各特徴量から平均を引き、標準偏差で割って、平均 0・標準偏差 1 にすること。"
+                                       "単位や大きさの違う特徴量を同じ目盛りにそろえる。")
         config = DataConfig(dataset, n_samples, noise, seed, test_size, features=features, standardize=standardize)
     st.session_state[DATA_CONFIG_KEY] = config
     return config

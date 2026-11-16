@@ -72,6 +72,14 @@ CLAIMS: dict[str, dict] = {
         "required": ("test", "doc"),
         "fragments": ("平均は −0.016", "−0.059 から +0.104", "+0.011、標準誤差は約 0.015"),
     },
+    # 実験 11 (Penguins、くちばしの長さ × 体重、シード 42、テスト 0.30 = 66 点、SVM rbf・C = 1): 標準化 OFF の gamma の説明 (N2(b))。
+    # 文書の 2 か所 (多数派の 0.697 の行と「なぜそうなるか」の段落) に同じ ID を付ける。tests/test_experiments_numbers.py が固定する
+    "X11-1": {
+        "kind": "number",
+        "summary": "標準化 OFF の SVM (gamma = 1) はテスト 0.727 で多数派 (0.697) に近く、gamma = 0.01 でも 0.803 までしか上がらず、標準化 ON の 0.970 に届かない",
+        "required": ("test", "doc"),
+        "fragments": ("数えると 0.697", "中央値が約 2.8", "0.727 から 0.803 まで上がります", "標準化 ON の 0.970 には届きません"),
+    },
     # 実験 12 (Iris): データカードの数と、シードごとの訓練データの中の食い違い。tests/test_datasets.py が全データの数を固定する
     "X12-1": {
         "kind": "number",
@@ -97,6 +105,17 @@ CLAIMS: dict[str, dict] = {
         "required": ("test", "doc"),
         # 「2 点」「0.986 (70 点中 69 点)」は、今は固定するテストが無い (次の段)。ここでは「入る」という向きだけを主張に数える
         "fragments": ("1.0 に届きません",),
+    },
+    # 実験 12 の CV の平均と条件 (N2(a))。シード 0〜19 の値は tests/test_experiments_numbers.py、シード 0〜199 の幅は
+    # tests/scale/test_experiment12_iris_cv_seeds.py (-m scale) が固定する
+    "X12-5": {
+        "kind": "number",
+        "summary": "Iris の 100 点全体の層化 5-fold × 20 回の平均で、がく片の組は k-NN・ロジスティック回帰のどちらも花弁の組に届かない (分割のシードで動く幅つき)",
+        "required": ("test", "doc"),
+        "fragments": ("100 点全体に層化 5-fold を 20 回 (分割のシード 0〜19)", "k-NN は標準化なし",
+                      "ロジスティック回帰 (C = 1) はアプリと同じく標準化を内蔵", "花弁の組で約 0.945", "がく片の組で約 0.649",
+                      "約 0.937 と約 0.726", "小数第 4 位を四捨五入", "180〜199 と替えて 10 回計算し直す", "0.004 以内", "k-NN が 0.632〜0.656",
+                      "ロジスティック回帰が 0.716〜0.727"),
     },
     # プレイグラウンドの注意: テストの正解率を見て値を選ぶと楽観的になりがち (app_pages/playground.py の TEST_SELECTION_NOTE)
     "M-PG-1": {
@@ -484,6 +503,24 @@ CLAIMS: dict[str, dict] = {
         "kind": "text",
         "summary": "サイドバー: 訓練データの最小のクラスの点数が CV の分割数より少ないと、そのクラスの点が検証データに入らない fold が出て、"
                    "ROC AUC ではその fold が NaN になる (クラス数に依らない)",
+        "required": ("test", "ui"),
+    },
+    # 学習者の指摘への修正 (瀬戸 直す 8・止、和泉 A-4)。tests/test_learner_c_claims.py が確かめる
+    "T-8": {
+        "kind": "text",
+        "summary": "評価指標の help: ROC AUC = ランダムに選んだ class 1 の点が class 0 の点より高く順位づけられる確率 "
+                   "(同点は 1/2)。順位はモデルの class 1 のスコアで決める。0.5 で当てずっぽう、1 で完全",
+        "required": ("test", "ui"),
+    },
+    "T-9": {
+        "kind": "text",
+        "summary": "探索ページの冒頭の案内: ハイパーパラメータ = 人があらかじめ決める設定値。案内の中のボタン名・タブの番号・"
+                   "実験 9・10 は、画面と実験ガイドに実在する",
+        "required": ("test", "ui"),
+    },
+    "M-MLP-5": {
+        "kind": "text",
+        "summary": "収束「いいえ」で打ち切られた MLP は、max_iter を上げると訓練の損失がさらに下がり、決定境界が変わることがある",
         "required": ("test", "ui"),
     },
     # 決定木の「深さと正解率」の図 (models/decision_tree.py の DEPTH_CURVE_NOTE)

@@ -160,7 +160,9 @@ def test_text_helpers_output_unchanged():
     assert len(axis) == 1 and len(fixed) == 1  # 空振りしていない
     assert (digest(axis), digest(fixed)) == ("b522a5dc1e8141a2", "4ee0eed6ea639879")
     balanced, skewed = np.array([0] * 70 + [1] * 70), np.array([0] * 102 + [1] * 48)
-    assert digest([tuning_text.scoring_help(balanced), tuning_text.scoring_help(skewed)]) == "bb521341031c27de"
+    # 偏りのある側に ROC AUC の定義を足したので更新した (旧 bb521341031c27de → c3c1360769488af4、さらに「モデルの
+    # class 1 のスコアで順位づける」を足して d8618ec5a5dff9fe。半々の側の文は移す前と同じ)
+    assert digest([tuning_text.scoring_help(balanced), tuning_text.scoring_help(skewed)]) == "d8618ec5a5dff9fe"
     captions = [tuning_text.test_se_caption(s, n) for s in ("accuracy", "roc_auc") for n in (1, 30, 0)]
     assert digest(captions) == "def587151c817681"
     values = [tuning_text.fmt_value(v) for v in (None, 3, 0.5, 1e-3, "rbf", 100.0)]
