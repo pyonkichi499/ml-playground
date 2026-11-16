@@ -1,7 +1,7 @@
 """モデルが学習者に向けて述べている主張 (summary / help / caption / 図のタイトル) が本当に成り立つかのテスト。
 
 対象はロジスティック回帰・k-NN・ガウス生成モデル・ランダムフォレスト・勾配ブースティング・MLP。
-末尾の「スケーリングへの不変性」(AD-14.4) の節だけは、決定木と SVM も対象にする。
+末尾の「スケーリングへの不変性」(AD-14.4) の節だけは、決定木・AdaBoost・SVM も対象にする。
 各テストの docstring に、検証している文言の出典 (ファイルと文言) を引用する。主張 1 つにつきテスト 1 つ。
 小さな固定データ・固定シードで決定的に動く。主張が偽だと分かった場合はテストを緩めず、TL 経由で担当者に報告する。
 
@@ -23,7 +23,8 @@ from scipy.stats import multivariate_normal
 from sklearn.tree import DecisionTreeClassifier
 
 import models  # noqa: F401  (レジストリへの登録)
-from data.generator import DataConfig, duplicate_stats
+from data.generator import DATASETS, DataConfig, duplicate_stats
+from models.adaboost import AdaBoostModel
 from models.base import PlotContext
 from models.gaussian import GaussianModel
 from models.gradient_boosting import GradientBoostingModel
@@ -509,6 +510,7 @@ SCALE_INVARIANT = {
 SCALE_UNCHANGED_IN_MEASURED_RANGE = {
     "random_forest": (RandomForestModel, {"n_estimators": 10}),
     "gradient_boosting": (GradientBoostingModel, {"n_estimators": 30}),
+    "adaboost": (AdaBoostModel, {}),  # 既定 (切り株 50 本)。実データの標準化は test_adaboost_standardize_differs_only_on_stump_thresholds
     "naive_bayes": (GaussianModel, {"variant": "nb"}),
     "qda": (GaussianModel, {"variant": "qda", "reg_param": 0.0}),
 }
@@ -569,8 +571,10 @@ def test_predictions_keep_under_measured_rescalings(moons, model_key, name):
     (下の SCALINGS: ×1:×400 + 平行移動、×10:×1000 + 平行移動、標準化) で、元のデータの予測と変換後の予測が一致する。
       - 決定木・LDA (SCALE_INVARIANT): 拡大縮小で不変。決定木は完全一致。LDA の確率の差は、固定データ (シード 0) で
         3.6e-15 以下、シード 20 通りの最大で 1.8e-14。
-      - RF・勾配ブースティング・NB・QDA (reg_param = 0) (SCALE_UNCHANGED_IN_MEASURED_RANGE): 上の条件の範囲でだけ予測が一致する
-        (不変とは言わない。Penguins 実データでは RF・勾配ブースティングが 1〜数点変わる)。RF・勾配ブースティングはこの範囲で完全一致。
+      - RF・勾配ブースティング・AdaBoost・NB・QDA (reg_param = 0) (SCALE_UNCHANGED_IN_MEASURED_RANGE): 上の条件の範囲でだけ予測が
+        一致する (不変とは言わない。Penguins 実データでは RF・勾配ブースティングが 1〜数点、AdaBoost が 1 点変わる。AdaBoost の
+        違いがしきい値の上の点だけであることは、下の test_adaboost_standardize_differs_only_on_stump_thresholds)。
+        RF・勾配ブースティング・AdaBoost はこの範囲で完全一致。
         NB の確率の差は固定データで最大 8.7e-5、シード 20 通りの最大で 1.16e-4。QDA の確率の差は固定データで 3.6e-15 以下、
         シード 20 通りの最大で 2.0e-14。これ以外の倍率・データ・シードでは言えず、範囲外の倍率では NB の予測クラスが変わり、
         QDA は失敗しうる (テストしない)。"""
@@ -587,6 +591,67 @@ def test_predictions_keep_under_measured_rescalings(moons, model_key, name):
     else:
         assert agreement >= TREE_MIN_AGREEMENT, (model_key, name, agreement)
         assert np.mean(diff > TREE_PROBA_TOL) <= 1 - TREE_MIN_AGREEMENT, (model_key, name, diff.max())
+
+
+# AdaBoost (既定: 切り株 50 本) の標準化の有無。全データ (実データは既定の特徴量の組、合成データは n=200・noise=0.2)、
+# テストの割合 0.3。シードは測定 (シード 0〜19 と 42 の 21 通り) のうち、違いが出た 4 つ (8・12・18) と 0・42
+ADA_SEEDS = (0, 8, 12, 18, 42)
+# 測定で、テスト点の予測が違ったのはこの 4 通りだけ (どれも 1 点。点はしきい値の上)。docs/decisions.md AD-14.4
+ADA_ROUNDING_CASES = {
+    ("Palmer Penguins", 12): (42.4, 17.3),
+    ("Palmer Penguins", 18): (42.4, 17.3),
+    ("Iris", 8): (5.0, 1.7),
+    ("Iris", 12): (5.0, 1.7),
+}
+ON_THRESHOLD_REL = 1e-6  # 丸めの位置と見なす、しきい値からの距離 (相対)。実測の距離は 3.8e-7 (Penguins)、1.2e-8 (Iris)
+
+
+def _ada_data(dataset: str, seed: int):
+    if DATASETS[dataset].is_real:
+        return DataConfig(dataset, None, None, seed, 0.3).load()
+    return DataConfig(dataset, 200, 0.2, seed, 0.3).load()
+
+
+@pytest.mark.claim("S1")
+@pytest.mark.parametrize("seed", ADA_SEEDS)
+@pytest.mark.parametrize("dataset", ["Moons", "Circles", "Linear Separable", "Palmer Penguins", "Iris", "Wine", "Breast Cancer"])
+def test_adaboost_standardize_differs_only_on_stump_thresholds(dataset, seed):
+    """AD-14.4 / README「木ベース (決定木・ランダムフォレスト・勾配ブースティング・AdaBoost) と LDA は … 数値の丸めによる違いを
+    除いて結果は変わりません」の AdaBoost の分: 標準化したデータで学習し直しても、木の構造 (特徴量・元の単位に戻したしきい値・
+    木の重み) は同じで、テスト点の予測が違うのは、切り株のしきい値の上 (float32 の丸めで左右が変わる位置) の点だけ。
+    しきい値の上にない点では、P(class 1) も一致する。違いが出る (データ, シード) は ADA_ROUNDING_CASES の 4 通りで、
+    それぞれ 1 点 (測った点と同じ)。それ以外は 0 点。出典: docs/decisions.md AD-14.4。"""
+    from sklearn.preprocessing import StandardScaler
+
+    X_train, X_test, y_train, _ = _ada_data(dataset, seed)
+    scaler = StandardScaler().fit(X_train)
+    raw = AdaBoostModel().fit(X_train, y_train, {}).estimator
+    std = AdaBoostModel().fit(scaler.transform(X_train), y_train, {}).estimator
+    Z_test = scaler.transform(X_test)
+
+    assert len(raw.estimators_) == len(std.estimators_)
+    np.testing.assert_allclose(std.estimator_weights_, raw.estimator_weights_, rtol=1e-9)
+    thresholds = []
+    for t_raw, t_std in zip(raw.estimators_, std.estimators_):
+        f = int(t_raw.tree_.feature[0])
+        assert f == int(t_std.tree_.feature[0]) and f >= 0
+        back = t_std.tree_.threshold[0] * scaler.scale_[f] + scaler.mean_[f]
+        assert back == pytest.approx(t_raw.tree_.threshold[0], rel=ON_THRESHOLD_REL)
+        thresholds.append((f, t_raw.tree_.threshold[0]))
+
+    on_threshold = np.array([
+        any(abs(x[f] - thr) <= ON_THRESHOLD_REL * max(1.0, abs(x[f])) for f, thr in thresholds) for x in X_test
+    ])
+    differs = raw.predict(X_test) != std.predict(Z_test)
+    proba_diff = np.abs(raw.predict_proba(X_test)[:, 1] - std.predict_proba(Z_test)[:, 1])
+    assert not np.any(differs & ~on_threshold), X_test[differs & ~on_threshold]
+    assert np.all(proba_diff[~on_threshold] <= 1e-12), proba_diff[~on_threshold].max()
+
+    expected = ADA_ROUNDING_CASES.get((dataset, seed))
+    if expected is None:
+        assert not differs.any(), X_test[differs]
+    else:
+        assert differs.sum() == 1 and tuple(X_test[differs][0]) == expected, X_test[differs]
 
 
 @pytest.mark.parametrize("name", list(SCALINGS))

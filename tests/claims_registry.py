@@ -23,7 +23,7 @@ MLP (ニューラルネットワークの損失曲線の注記)。
 CLAIMS: dict[str, dict] = {
     "S1": {
         "kind": "text",
-        "summary": "決定木・RF・GB と LDA は、特徴量ごとの拡大縮小で結果が変わらない (数値の丸めによる違いを除く)",
+        "summary": "決定木・RF・GB・AdaBoost と LDA は、特徴量ごとの拡大縮小で結果が変わらない (数値の丸めによる違いを除く)",
         "required": ("test", "doc", "ui"),
         "fragments": ("数値の丸めによる違いを除いて",),  # 決め手の語句 (README の標準化の段落)
     },
