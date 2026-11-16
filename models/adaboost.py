@@ -71,7 +71,7 @@ class AdaBoostModel(BaseModel):
         "勾配ブースティングが「誤差を足していく」のに対し、こちらは「間違えた点に集中していく」。"
     )
     default_params = {"n_estimators": 50, "learning_rate": 1.0, "base_depth": 1}
-    tuning_cost = "medium"  # U1 の較正は未実施 (係数は既存 8 モデルで測った値)
+    tuning_cost = "medium"  # 1 評価は RF・GB と同程度 (U1 の較正、tuning/runner.py の FOLD_OVERHEAD のコメント)
     standardize_note_kind = "invariant"  # 木の分割は大小比較だけなので、丸めを除いて結果が変わらない (AD-14.4、S1)
     # チューニングページの固定値の初期値だけ。default_params と同じ値 (RF と同じ形で、探索の 1 評価を軽く保つ。AD-11)
     tuning_defaults = {"n_estimators": 50}

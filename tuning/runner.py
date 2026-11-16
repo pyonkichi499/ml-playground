@@ -291,6 +291,10 @@ PARALLEL_EFFICIENCY = 0.6
 #:   生の比が 0.74 (Moons) 〜 1.18 (Penguins) とデータ依存で揺れる。モデル別の係数では直せないので置かない。
 #: 予測される エンジン部分の 実測 ÷ 推定: LogReg 0.98 / SVM ≈0.95 / KNN・Gaussian・DT 0.85〜1.0 / RF 0.80〜0.83 /
 #:   GB 0.89 (Moons)・0.54 (Penguins。マップの並列効率が高い分) / MLP 0.70。どれも 1.0 を超えない (過小評価にしない)
+#: AdaBoost の追加の較正 (2026-11-15、U1、Moons n=200 / Penguins、直列、OMP 等 1 スレッド、load 1.4〜13):
+#:   生の比は 既定の軸 (learning_rate × base_depth) で 1.04〜1.38、learning_rate × n_estimators で 0.84〜0.92。
+#:   エンジン部分の 実測 ÷ 推定 は 0.61〜0.75 / 0.84〜1.00 で、同じ条件の RF 0.65〜0.86・GB 0.73〜1.04 と同程度。
+#:   過小評価にならないので、係数は変えない (並列の経路の比は未測定)
 FOLD_OVERHEAD = 1.25
 #: 1 回の評価 (k-fold CV 1 回) あたりの固定費 [秒]。SVM (1 評価 12 ms) で 生の比 0.69 → 8.3 ms × 1.25 + 3 ms ≈ 12 ms
 EVAL_OVERHEAD_SECONDS = 0.003
@@ -477,7 +481,7 @@ def estimate_run_seconds(
       t (先頭の直列 1 セル) + PARALLEL_FIXED_SECONDS + t × (セル数 − 1) ÷ (max_jobs() × PARALLEL_EFFICIENCY)
       + ワーカー未起動なら WORKER_STARTUP_SECONDS。
     係数は 4 並列 (AD-16)、Moons n=200、5-fold、load 2〜5 で当時の 8 モデル (AdaBoost の追加前) を実測して決めた
-    (U1 の較正。AdaBoost は未較正。各定数のコメント参照)。timing のテストで「実測 ÷ 推定」∈ [0.5, 2] を確認する。過小評価の方が害が大きいので多めに倒してある。
+    (U1 の較正。AdaBoost は 2026-11-15 に直列で確かめ、係数は変えていない。各定数のコメント参照)。timing のテストで「実測 ÷ 推定」∈ [0.5, 2] を確認する。過小評価の方が害が大きいので多めに倒してある。
     """
     t = measure_eval_seconds(config, X, y) if per_eval is None else float(per_eval)
     search = t * expected_evaluations(config)

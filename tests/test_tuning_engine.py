@@ -460,6 +460,7 @@ def test_standard_error_auc_matches_bootstrap():
 # ---------------------------------------------------------------- run-time estimate (AD-11)
 LOGREG = "ロジスティック回帰 (Logistic Regression)"
 GB = "勾配ブースティング (Gradient Boosting)"
+ADA = "アダブースト (AdaBoost)"
 
 
 def _default_run(model: str, axes: tuple[str, str], fixed=()) -> tuple[TuningConfig, int]:
@@ -482,24 +483,32 @@ def _load_average() -> str:
 
 
 @pytest.mark.timing
-@pytest.mark.parametrize("model, axes", [(DT, ("max_depth", "min_samples_leaf")), (LOGREG, ("degree", "C"))])
+@pytest.mark.parametrize("model, axes", [
+    (DT, ("max_depth", "min_samples_leaf")),
+    (LOGREG, ("degree", "C")),
+    (ADA, ("learning_rate", "base_depth")),  # 係数を決めた 8 モデルの後に足したモデル (U1 の較正、2026-11-15)
+])
 def test_estimate_run_seconds_within_factor_two(data, model, axes):
     """既定の設定 (n=200、default_trials × 3 手法 + 全探索マップ) で 実測 ÷ 推定 ∈ [0.5, 2] (アーキの条件)。
 
     計時は他のプロセスの負荷で揺れるので、(推定, 実測) の組を 2 回測り、どちらかの組が範囲に入れば良い (best of 2)。
     推定と実測は組ごとに続けて行い、負荷の影響をそろえる。失敗時は全部の組の比・推定・実測・load を出す。
+    全探索マップは、推定のセル数と同じ budget の surface_resolution で計算する (medium は 12、low は 20)。
     """
     import time
 
+    from tuning.budget import budget_for
+
     X, _, y, _ = data
     cfg, cells = _default_run(model, axes)
+    resolution = budget_for(MODEL_REGISTRY[model].tuning_cost).surface_resolution
     estimates, actuals = [], []
     for _ in range(2):
         estimates.append(estimate_run_seconds(cfg, X, y, cells))
         start = time.perf_counter()
         list(run_search(cfg, X, y))
         compute_surface(model, spec(model, axes[0]), spec(model, axes[1]), cfg.fixed_dict, X, y, cfg.n_splits,
-                        cfg.seed, cfg.scoring, 20)
+                        cfg.seed, cfg.scoring, resolution)
         actuals.append(time.perf_counter() - start)
     # 比は「続けて測った推定と実測の組」ごとに出す (組の中は負荷の条件がそろう)。推定の最小と実測の最小を
     # 別々に取ると、短い計測だけが負荷の谷に当たった場合に組がずれる (実測例: 推定 [21.5, 5.6] s / 実測 [12.5, 13.0] s、
